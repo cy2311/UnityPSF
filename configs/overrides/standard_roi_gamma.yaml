@@ -1,0 +1,102 @@
+phase_retrieval:
+  input:
+    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+train:
+  device: cuda:0
+  epochs: 300
+  batch_size: 24
+  online_generation:
+    enabled: true
+    steps_per_epoch: 417
+    height: 128
+    width: 128
+    channels: 3
+    batch_strategy: cached_window
+    sequence_count: 64
+    sequence_window_chunks: 2
+    conditioning_enabled: true
+    conditioning_mode: film
+    condition_feature_dim: 8
+    condition_dim: 10
+    domain_count: 2
+    append_domain_onehot: true
+    expert_mode: soft_moe
+    domain_balance_mode: alternate_step
+    nat_simulation_mode: grid_map
+    nat_grid_size: [2, 2]
+    nat_grid_z_steps: 41
+    grad_clip_norm: 0.03
+    amp_enabled: true
+    amp_dtype: float16
+  eval:
+    enabled: true
+    source: online_generation
+    batch_count: 4
+    batch_size: 4
+    seed: 100000
+  peak_zmap_bootstrap:
+    enabled: true
+    frame_start: 0
+    frame_stop: 100
+    max_emitters: 1000
+    nat_config_kind: order1
+    alternating_rounds: 3
+    alternating_local_steps: 2
+    alternating_global_steps: 2
+    alternating_optimizer_kind: lm
+    formal_export_stage: alternating
+    filter_emitters_by_ncc: true
+    ncc_threshold: 0.7
+  joint_training:
+    enabled: true
+    real_batch_interval: 0
+    real_loc_enabled: false
+    real_loc_start_step: 0
+  nat_wake:
+    patch_size_px: 25
+    loss_mode: roi_projection_poisson_nll
+    feedback_enabled: true
+    feedback_interval_steps: 417
+  real_tiff_wake:
+    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+  roi_bank_gamma:
+    enabled: true
+    update_interval_epochs: 5
+    start_epoch: 30
+    stop_epoch: 300
+    output_dir: roi_bank_gamma_interval5_lr025_steps100_epoch300
+    roi_bank_path: null
+    auto_build_roi_bank: true
+    fixed_roi_library: true
+    roi_bank_source: loc_infer_raw_tiff
+    roi_bank_frame_range: [0, 100]
+    roi_bank_grid_shape: [4, 4]
+    roi_bank_background_smoothing_kernel: 9
+    roi_bank_candidate_mode: dense_tile_temporal
+    roi_library_target_z_per_bin: 1000
+    roi_library_z_bins: 10
+    roi_library_max_rois: 2048
+    target_projected_emitters: 5000
+    roi_groups_per_update: null
+    max_sampling_rounds: 20
+    gamma_steps: 100
+    gamma_lr: 0.025
+    num_posterior_samples: 25
+    roi_bank_objective: importance_wake
+    candidate_probability_threshold: 0.3
+    roi_bank_candidate_probability_threshold: 0.3
+    posterior_candidate_probability_threshold: 0.3
+    roi_bank_probability_threshold: 0.5
+    probability_threshold: 0.5
+    roi_size_px: 128
+    roi_bank_over_cut_px: 8
+    roi_bank_projection_emitter_chunk_size: 4096
+    roi_bank_projection_sample_batch_size: 16
+    auto_heldout_fraction: 0.1
+    auto_heldout_min_rois: 20
+    auto_heldout_max_rois: 20
+    auto_heldout_seed: 0
+metadata:
+  training_mode: neptune_v03_standard_roi_gamma_interval5_lr025_steps100_epoch300
+  source_reference: neptune_iwae/standard.py
+  standard_note: neptune_iwae formal default uses 300 epochs with ROI128 fixed library gamma updates from epoch 30 every 5 epochs.

@@ -1,0 +1,277 @@
+schema_version: "0.3"
+
+optical:
+  NA: 1.4
+  pixel_size_nm_x: 101.11
+  pixel_size_nm_y: 98.83
+  wavelength_nm: 660
+  n_medium: 1.518
+
+camera:
+  qe: 0.9
+  read_sigma: 0
+  spurious_charge: 0.002
+  em_gain: 1.0
+  e_per_adu: 1.020784562122306
+  baseline: 398.6
+
+phase_retrieval:
+  backend: simulator_diff
+  input:
+    tiff_path: neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif
+  zernike:
+    noll_start: 4
+    noll_end: 12
+    ncc_thresh: 0.8
+  runtime:
+    device: cuda
+    max_iter: 60
+    adam_warmup: 8
+    batch_size_roi: 4
+
+simulation:
+  frames_per_sample: 10000
+  num_emitters: 872792
+  n_max: 1024
+  use_gpu: true
+  background_uniform: [110.0, 110.0]
+  emitter:
+    emitter_extent:
+      - [-0.5, 127.5]
+      - [-0.5, 127.5]
+      - [-0.6, 0.6]
+    field_extent:
+      - [540, 668]
+      - [540, 668]
+    z_range: [-0.6, 0.6]
+    intensity_mu_sig: [20000.0, 1000.0]
+    intensity_clip: [0.0, 31000.0]
+  psf:
+    psf_type: vector
+    vector:
+      npupil: 128
+      psf_size: 128
+      otf_rescale_xy: [0.0, 0.0]
+      batch_size: 96
+      gpu_pipeline: true
+      psf_chunk: 20000
+      event_batch: 256
+      mean_psf:
+        enabled: true
+        ncc_thresh: 0.8
+        z_steps: 121
+
+train:
+  epochs: 300
+  batch_size: 24
+  scaling:
+    input_offset: 0.0
+    input_scale: 1.0
+    photon_max: 31000.0
+    z_max: 0.6
+    bg_max: 240.0
+  normalization:
+    mode: fd_deeploc_train_raw_backg
+    infer_mode: fd_deeploc_exact_recenter
+    baseline_adu: 398.6
+    e_per_adu: 1.020784562122306
+    train_background_adu: 495.58422534346505
+    qe: 0.9
+    em_gain: 1.0
+    spurious_charge: 0.002
+    photon_scale: 20000.0
+    background_percentile: 50.0
+  loss:
+    gmm_target_chunk: 4
+    gmm_component_chunk: 64
+    gmm_backend: mixture_same_family
+  online_generation:
+    enabled: true
+    steps_per_epoch: 2
+    batch_strategy: cached_window
+    sequence_count: 64
+    sequence_window_chunks: 2
+    report_every_steps: 1
+    grad_clip_norm: 0.03
+    conditioning_enabled: true
+    random_subregion_enabled: true
+    conditioning_mode: film
+    simulation_backend: lut
+    film_hidden_dim: 32
+    lut_simulation:
+      zmap_npz: null
+      field_stride: 16
+      z_step_nm: 20.0
+      dtype: fp16
+      subpixel_bins: 1
+      z_scale_nm: 600.0
+      place_delta: 0
+      subpixel_center_offset: 0.5
+      shift_sign: 1
+      device: cuda
+      psf_size: 51
+      dual_domain_zmaps: []
+    amp_enabled: true
+    amp_dtype: float16
+    subregion_sampling_mode: random_continuous
+    nat_simulation_mode: grid_map
+    nat_grid_size: [2, 2]
+    nat_grid_z_steps: 41
+    domain_count: 2
+    append_domain_onehot: true
+    expert_mode: soft_moe
+    domain_balance_mode: alternate_step
+    emitter_density_um2: 1.0
+    dual_domain_coeff_maps: []
+  peak_zmap_bootstrap:
+    enabled: true
+    sample: microtube
+    output_dir: peak_zmap_bootstrap
+    frame_start: 0
+    frame_stop: 100
+    max_emitters: 1000
+    nat_config_kind: order1
+    alternating_rounds: 3
+    alternating_local_steps: 2
+    alternating_global_steps: 2
+    alternating_optimizer_kind: lm
+    formal_export_stage: alternating
+    approximate_fit_steps: 60
+    spatial_balance_grid_px: 100
+    global_projected_min_distance_px: 10.0
+    filter_emitters_by_ncc: true
+    ncc_threshold: 0.7
+  joint_training:
+    enabled: true
+    real_batch_interval: 0
+    sim_gmm_weight: 1.0
+    real_gamma_iwae_weight: 1.0
+    real_loc_enabled: false
+    real_loc_method: dreg
+    real_loc_weight: 0.01
+    real_loc_start_step: 0
+    real_loc_dreg_num_samples: 4
+    real_loc_dreg_weight_power: 2.0
+    real_loc_train_scope: heads_only
+  nat_wake:
+    enabled: true
+    patch_size_px: 15
+    npupil: 32
+    renderer_batch_size: 16
+    gamma_lr: 0.001
+    warmup_steps: 0
+    wake_interval: 0
+    wake_grad_clip_norm: 1.0
+    prob_min: 0.2
+    locprec_xy_nm_max: 1000.0
+    photon_min: 0.0
+    raw_channel_index: 1
+    detach_loc: true
+    gamma_l2: 0.0
+    loss_mode: roi_projection_poisson_nll
+    iwae_num_samples: 8
+    iwae_min_sigma: 0.001
+    feedback_enabled: true
+    feedback_interval_steps: 0
+    feedback_include_fixed_astig_baseline: true
+    gamma_init_mode: constant_terms_nm
+    gamma_init_anchor_nm: 99.0
+    image_size_x: 600
+    image_size_y: 1200
+  real_tiff_wake:
+    enabled: true
+    tiff_path: neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif
+    roi_size: 256
+    window_size: 3
+    max_frames: 8000
+    sampling_mode: lunar_weighted
+    sampling_profile_frame_count: 1024
+    batch_size: 2
+    min_sampling_rounds_per_wake: 1
+    max_sampling_rounds_per_wake: 10
+    target_valid_emitters_per_wake: 5000
+    domains:
+      - name: left
+        crop_left: 0
+        crop_top: 0
+        crop_width: 600
+        crop_height: 1200
+      - name: right
+        crop_left: 600
+        crop_top: 0
+        crop_width: 600
+        crop_height: 1200
+  regen_train_dataset_each_epoch: true
+  regen_eval_dataset_each_epoch: false
+  roi_bank_gamma:
+    enabled: false
+    update_interval_epochs: 25
+    start_epoch: 25
+    stop_epoch: 300
+    output_dir: roi_bank_gamma
+    roi_bank_path: null
+    auto_build_roi_bank: true
+    fixed_roi_library: true
+    roi_bank_source: loc_infer_raw_tiff
+    roi_bank_frame_range: [0, 1024]
+    roi_bank_grid_shape: [4, 4]
+    roi_bank_background_smoothing_kernel: 9
+    roi_bank_candidate_mode: dense_tile_temporal
+    roi_library_target_z_per_bin: 1000
+    roi_library_z_bins: 10
+    roi_library_max_rois: 2048
+    target_projected_emitters: 5000
+    max_sampling_rounds: 20
+    gamma_steps: 50
+    gamma_lr: 0.001
+    num_posterior_samples: 100
+    roi_bank_objective: importance_wake
+    candidate_probability_threshold: 0.3
+    roi_bank_candidate_probability_threshold: 0.3
+    posterior_candidate_probability_threshold: 0.3
+    roi_bank_probability_threshold: 0.5
+    probability_threshold: 0.5
+    roi_size_px: 256
+    roi_bank_over_cut_px: 8
+    auto_heldout_fraction: 0.1
+    auto_heldout_min_rois: 4
+    auto_heldout_seed: 0
+
+smlm_overrides:
+  optimizer: AdamW
+  optimizer_lr: 0.0006
+  optimizer_weight_decay: 0.1
+  lr_scheduler: StepLR
+  lr_step_size: 1000
+  lr_gamma: 0.9
+  lr_step_unit: optimizer_step
+
+localization_overrides:
+  depth_shared: 2
+  depth_union: 2
+  nfeatures_init: 48
+  nfeatures_inter: null
+  norm_start_level: -1
+  norm_groups: 0
+  activation: ELU
+  dropout_start_level: null
+  p_dropout: -0.1
+  pool_mode: StrideConv
+  upsample_mode: nearest
+  inter_activation: null
+  norm_head_groups: 0
+  final_activation: ELU
+  kaiming_normal: true
+  depthwise: true
+
+paths:
+  data_root: datasets
+  raw_tiff_dir: neptune_iwae/test_data/microtube/raw
+  phase_output_dir: datasets/phase
+  phase_figures_dir: datasets/phase/figures
+  seeds_dir: datasets/seeds
+
+metadata:
+  training_mode: neptune_v03_microtube_base
+  source_reference: neptune_iwae/config/microtube_real_tiff_switch_train_anchor99_roi_gamma_start50_interval10.json
+  active_pipeline: microtube_roi_bank_gamma_loop

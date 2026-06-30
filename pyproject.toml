@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "neptune-v03"
+version = "0.3.0"
+description = "Clean Neptune v0.3 SMLM ROI-bank gamma optimization package."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "numpy",
+  "torch",
+  "h5py",
+  "tifffile",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+]
+
+[project.scripts]
+neptune-v03-materialize-config = "neptune_v03.config.materialize:main"
+neptune-v03-gamma-update-monitor = "neptune_v03.diagnostics.gamma_update_monitor:main"
+neptune-v03-train-localization = "neptune_v03.training.run_localization:main"
+neptune-v03-train-high-fidelity = "neptune_v03.training.run_high_fidelity:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

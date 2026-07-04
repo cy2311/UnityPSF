@@ -4,6 +4,8 @@ from collections.abc import Sequence
 
 import numpy as np
 
+from neptune_v03.field_origin import build_sliding_window_origin_bank, sliding_window_origin_index_for_xy
+
 from .types import FOVSelection, ROICandidate
 
 
@@ -96,6 +98,87 @@ def build_roi_candidate(
         emitter_count=len(indices),
         quality_score=_mean_probability_score(probabilities),
     )
+
+
+def build_sliding_window_guided_candidates(
+    *,
+    xy_px: np.ndarray,
+    probabilities: np.ndarray,
+    domain_width_px: int,
+    domain_height_px: int,
+    roi_size_px: int,
+    stride_px: int,
+    grid_shape: tuple[int, int],
+    valid_core_size_px: int | None = None,
+) -> tuple[ROICandidate, ...]:
+    xy = np.asarray(xy_px, dtype=np.float32)
+    probs = np.asarray(probabilities, dtype=np.float32).reshape(-1)
+    if xy.ndim != 2 or xy.shape[1] != 2:
+        raise ValueError("xy_px must have shape [N, 2]")
+    if probs.shape[0] != xy.shape[0]:
+        raise ValueError("probabilities must have length N")
+    core_size = int(valid_core_size_px or roi_size_px)
+    if core_size <= 0 or core_size > int(roi_size_px):
+        raise ValueError("valid_core_size_px must be positive and no larger than roi_size_px")
+    origins = build_sliding_window_origin_bank(
+        field_width_px=int(domain_width_px),
+        field_height_px=int(domain_height_px),
+        roi_width_px=core_size,
+        roi_height_px=core_size,
+        stride_px=int(stride_px),
+    )
+    by_origin: dict[int, list[int]] = {}
+    for emitter_idx, center in enumerate(xy):
+        origin_idx = sliding_window_origin_index_for_xy(
+            (float(center[0]), float(center[1])),
+            origins=origins,
+            roi_width_px=core_size,
+            roi_height_px=core_size,
+        )
+        by_origin.setdefault(int(origin_idx), []).append(int(emitter_idx))
+
+    candidates: list[ROICandidate] = []
+    for candidate_id, origin_idx in enumerate(sorted(by_origin)):
+        core_origin = origins[int(origin_idx)]
+        origin = _context_origin_from_core(
+            core_origin,
+            domain_width_px=int(domain_width_px),
+            domain_height_px=int(domain_height_px),
+            roi_size_px=int(roi_size_px),
+            valid_core_size_px=core_size,
+        )
+        x0, y0 = origin
+        x1, y1 = x0 + int(roi_size_px), y0 + int(roi_size_px)
+        inside = (
+            (xy[:, 0] >= float(x0))
+            & (xy[:, 0] < float(x1))
+            & (xy[:, 1] >= float(y0))
+            & (xy[:, 1] < float(y1))
+        )
+        emitter_indices = tuple(int(v) for v in np.nonzero(inside)[0].tolist())
+        emitter_probs = probs[np.asarray(emitter_indices, dtype=np.int64)] if emitter_indices else np.empty((0,), dtype=np.float32)
+        center_xy = _candidate_center_from_origin(core_origin, roi_size_px=core_size)
+        candidates.append(
+            ROICandidate(
+                candidate_id=int(candidate_id),
+                origin_xy_px=origin,
+                center_xy_px=center_xy,
+                grid_cell_id=grid_cell_id_for_xy(
+                    center_xy,
+                    domain_width_px=domain_width_px,
+                    domain_height_px=domain_height_px,
+                    grid_shape=grid_shape,
+                ),
+                emitter_indices=emitter_indices,
+                emitter_count=len(emitter_indices),
+                quality_score=_mean_probability_score(emitter_probs),
+                origin_bank_index=int(origin_idx),
+                valid_core_origin_xy_px=core_origin,
+                valid_core_offset_xy_px=(int(core_origin[0]) - int(origin[0]), int(core_origin[1]) - int(origin[1])),
+                valid_core_size_px=core_size,
+            )
+        )
+    return tuple(candidates)
 
 
 def build_emitter_centered_candidates(
@@ -225,6 +308,27 @@ def _mean_probability_score(probabilities: np.ndarray) -> float:
     if probabilities.size == 0:
         return 0.0
     return float(probabilities.mean(dtype=np.float64))
+
+
+def _candidate_center_from_origin(origin_xy_px: tuple[int, int], *, roi_size_px: int) -> tuple[float, float]:
+    return (float(origin_xy_px[0]) + float(roi_size_px) / 2.0, float(origin_xy_px[1]) + float(roi_size_px) / 2.0)
+
+
+def _context_origin_from_core(
+    core_origin_xy_px: tuple[int, int],
+    *,
+    domain_width_px: int,
+    domain_height_px: int,
+    roi_size_px: int,
+    valid_core_size_px: int,
+) -> tuple[int, int]:
+    margin_x = max(0, (int(roi_size_px) - int(valid_core_size_px)) // 2)
+    margin_y = margin_x
+    max_x0 = max(0, int(domain_width_px) - int(roi_size_px))
+    max_y0 = max(0, int(domain_height_px) - int(roi_size_px))
+    x0 = max(0, min(int(core_origin_xy_px[0]) - margin_x, max_x0))
+    y0 = max(0, min(int(core_origin_xy_px[1]) - margin_y, max_y0))
+    return int(x0), int(y0)
 
 
 def _selected_emitter_count(candidates: Sequence[ROICandidate]) -> int:

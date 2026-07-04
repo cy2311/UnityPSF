@@ -97,6 +97,9 @@ train:
     random_subregion_enabled: true
     conditioning_mode: film
     simulation_backend: lut
+    simulation_output_device: renderer
+    cached_window_order: auto
+    cached_window_max_gpu_sequences: 4
     film_hidden_dim: 32
     lut_simulation:
       zmap_npz: null
@@ -224,6 +227,8 @@ train:
     max_sampling_rounds: 20
     gamma_steps: 50
     gamma_lr: 0.001
+    checkpoint_policy: final_step
+    renderer_batch_size: 128
     num_posterior_samples: 100
     roi_bank_objective: importance_wake
     candidate_probability_threshold: 0.3

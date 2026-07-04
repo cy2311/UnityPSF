@@ -8,6 +8,7 @@ import torch
 from neptune_v03.localization.smlm_targets import V03_PXYZ_TARGET_ORDER, V03_PXYZ_TARGET_UNITS
 from neptune_v03.localization.training_adapter import LocalizationTrainBatch
 from neptune_v03.optics.vector_psf import VectorPSFParams, build_vector_psf_context, noll_to_nm, render_vector_psf_bank
+from neptune_v03.runtime.profiling import time_block
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class LocalizationSimulatorConfig:
     field_origin_xy: tuple[int, int] = (0, 0)
     coeff_maps_nm: torch.Tensor | None = None
     coeff_mode_order: tuple[tuple[int, int], ...] = ()
+    output_device: str = "cpu"
 
 
 def simulate_localization_batch(
@@ -82,9 +84,17 @@ def simulate_localization_batch(
         z[batch_idx, :count_i] = _sample_range(config.z_range, shape=(count_i,), fallback=0.0, generator=generator)
     background = _sample_range(config.background_range, shape=(batch_size,), fallback=float(config.background), generator=generator)
 
-    detect = torch.zeros((batch_size, height, width), dtype=torch.float32)
-    model_input = background.view(batch_size, 1, 1, 1).expand(batch_size, channels, height, width).clone()
     vector_renderer = _build_vector_renderer(config)
+    device = vector_renderer.device
+    xs = xs.to(device=device)
+    ys = ys.to(device=device)
+    photons = photons.to(device=device)
+    z = z.to(device=device)
+    mask = mask.to(device=device)
+    background = background.to(device=device)
+
+    detect = torch.zeros((batch_size, height, width), dtype=torch.float32, device=device)
+    model_input = background.view(batch_size, 1, 1, 1).expand(batch_size, channels, height, width).clone()
     for batch_idx in range(batch_size):
         count = int(counts[batch_idx].item())
         if count <= 0:
@@ -105,7 +115,7 @@ def simulate_localization_batch(
 
     background_target = background / max(float(config.background_scale), 1e-12)
 
-    return LocalizationTrainBatch(
+    batch = LocalizationTrainBatch(
         model_input=model_input,
         detect_tar=detect,
         bkg_tar=background_target.view(batch_size, 1, 1).expand(batch_size, height, width).clone(),
@@ -131,6 +141,7 @@ def simulate_localization_batch(
             "field_origin_xy": [int(config.field_origin_xy[0]), int(config.field_origin_xy[1])],
         },
     )
+    return _localization_batch_to_output_device(batch, output_device=str(config.output_device), renderer_device=device)
 
 
 def _sample_photons(
@@ -197,6 +208,7 @@ class _VectorEmitterRenderer:
         noll_indices = _noll_indices_for_modes(self.mode_order)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
+        self.maps_nm = self.maps_nm.to(device=self.device)
         self.ctx = build_vector_psf_context(
             NA=float(config.na),
             wavelength_nm=float(config.wavelength_nm),
@@ -225,41 +237,125 @@ class _VectorEmitterRenderer:
         ys: torch.Tensor,
         z_um: torch.Tensor,
         photons: torch.Tensor,
+        field_origin_xy: tuple[int, int] | None = None,
     ) -> torch.Tensor:
+        patches, center_x, center_y = self._render_patches(
+            xs=xs,
+            ys=ys,
+            z_um=z_um,
+            photons=photons,
+            field_origin_xy=field_origin_xy,
+        )
+        return _place_patches(
+            patches.detach(),
+            height=height,
+            width=width,
+            center_x=center_x.detach(),
+            center_y=center_y.detach(),
+        )
+
+    def render_frames(
+        self,
+        *,
+        frame_count: int,
+        height: int,
+        width: int,
+        frame_indices: torch.Tensor,
+        xs: torch.Tensor,
+        ys: torch.Tensor,
+        z_um: torch.Tensor,
+        photons: torch.Tensor,
+        field_origin_xy: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
+        patches, center_x, center_y = self._render_patches(
+            xs=xs,
+            ys=ys,
+            z_um=z_um,
+            photons=photons,
+            field_origin_xy=field_origin_xy,
+        )
+        return _place_patches_frames(
+            patches.detach(),
+            frame_count=int(frame_count),
+            height=height,
+            width=width,
+            frame_indices=frame_indices.to(device=self.device, dtype=torch.long).reshape(-1),
+            center_x=center_x.detach(),
+            center_y=center_y.detach(),
+        )
+
+    def _render_patches(
+        self,
+        *,
+        xs: torch.Tensor,
+        ys: torch.Tensor,
+        z_um: torch.Tensor,
+        photons: torch.Tensor,
+        field_origin_xy: tuple[int, int] | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         xs_t = xs.to(device=self.device, dtype=torch.float32).reshape(-1)
         ys_t = ys.to(device=self.device, dtype=torch.float32).reshape(-1)
         z_t = z_um.to(device=self.device, dtype=torch.float32).reshape(-1)
         photons_t = photons.to(device=self.device, dtype=torch.float32).reshape(-1)
-        cols = torch.round(xs_t + int(self.config.field_origin_xy[0])).to(dtype=torch.long).clamp_(0, self.maps_nm.shape[2] - 1)
-        rows = torch.round(ys_t + int(self.config.field_origin_xy[1])).to(dtype=torch.long).clamp_(0, self.maps_nm.shape[1] - 1)
-        coeffs_nm = self.maps_nm.to(device=self.device)[:, rows, cols].transpose(0, 1).contiguous()
+        origin = self.config.field_origin_xy if field_origin_xy is None else field_origin_xy
+        cols = torch.round(xs_t + int(origin[0])).to(dtype=torch.long).clamp_(0, self.maps_nm.shape[2] - 1)
+        rows = torch.round(ys_t + int(origin[1])).to(dtype=torch.long).clamp_(0, self.maps_nm.shape[1] - 1)
+        coeffs_nm = self.maps_nm[:, rows, cols].transpose(0, 1).contiguous()
         coeffs_rad = coeffs_nm * (2.0 * math.pi / max(float(self.config.wavelength_nm), 1e-6)) * self.ctx.normfac[None, :]
-        patches = render_vector_psf_bank(
-            self.ctx,
-            coeffs_rad,
-            z_t * 1e-6,
-            out_size=int(self.config.vector_psf_size),
-            batch_size=int(self.config.vector_batch_size),
-            return_torch=True,
-        )
+        with time_block("render_vector_patches"):
+            patches = render_vector_psf_bank(
+                self.ctx,
+                coeffs_rad,
+                z_t * 1e-6,
+                out_size=int(self.config.vector_psf_size),
+                batch_size=int(self.config.vector_batch_size),
+                return_torch=True,
+            )
         center_x = torch.floor(xs_t).to(dtype=torch.long)
         center_y = torch.floor(ys_t).to(dtype=torch.long)
         local_x = xs_t - (center_x.to(dtype=torch.float32) + 0.5)
         local_y = ys_t - (center_y.to(dtype=torch.float32) + 0.5)
-        patches = _fourier_shift_patches(patches, shift_x_px=local_x, shift_y_px=local_y).clamp_min(0.0)
+        with time_block("fourier_shift_patches"):
+            patches = _fourier_shift_patches(patches, shift_x_px=local_x, shift_y_px=local_y).clamp_min(0.0)
         patches = patches / patches.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
         patches = patches * photons_t[:, None, None]
-        return _place_patches(
-            patches.detach().cpu(),
-            height=height,
-            width=width,
-            center_x=center_x.detach().cpu(),
-            center_y=center_y.detach().cpu(),
-        )
+        return patches, center_x, center_y
 
 
 def _build_vector_renderer(config: LocalizationSimulatorConfig) -> _VectorEmitterRenderer:
     return _VectorEmitterRenderer(config)
+
+
+def _localization_batch_to_output_device(
+    batch: LocalizationTrainBatch,
+    *,
+    output_device: str,
+    renderer_device: torch.device,
+) -> LocalizationTrainBatch:
+    device = _resolve_output_device(output_device, renderer_device=renderer_device)
+    return LocalizationTrainBatch(
+        model_input=_move_model_input(batch.model_input, device),
+        detect_tar=batch.detect_tar.to(device=device),
+        bkg_tar=batch.bkg_tar.to(device=device),
+        pxyz_tar=batch.pxyz_tar.to(device=device),
+        mask_tar=batch.mask_tar.to(device=device),
+        metadata=batch.metadata,
+    )
+
+
+def _resolve_output_device(output_device: str, *, renderer_device: torch.device) -> torch.device:
+    key = str(output_device or "cpu").strip().lower()
+    if key == "cpu":
+        return torch.device("cpu")
+    if key == "renderer":
+        return renderer_device
+    raise ValueError("output_device must be 'cpu' or 'renderer'")
+
+
+def _move_model_input(model_input: torch.Tensor | tuple[torch.Tensor, ...], device: torch.device) -> torch.Tensor | tuple[torch.Tensor, ...]:
+    if isinstance(model_input, tuple):
+        return tuple(item.to(device=device) for item in model_input)
+    return model_input.to(device=device)
 
 
 def _noll_indices_for_modes(mode_order: tuple[tuple[int, int], ...]) -> list[int]:
@@ -283,21 +379,50 @@ def _fourier_shift_patches(patches: torch.Tensor, *, shift_x_px: torch.Tensor, s
 
 
 def _place_patches(patches: torch.Tensor, *, height: int, width: int, center_x: torch.Tensor, center_y: torch.Tensor) -> torch.Tensor:
-    frame = torch.zeros((int(height), int(width)), dtype=torch.float32)
+    frame = torch.zeros((int(height), int(width)), dtype=patches.dtype, device=patches.device)
     if patches.numel() == 0:
         return frame
     psf_size = int(patches.shape[-1])
     radius = psf_size // 2
-    patch_y = torch.arange(psf_size).view(1, psf_size, 1)
-    patch_x = torch.arange(psf_size).view(1, 1, psf_size)
-    image_y = center_y.to(dtype=torch.long).view(-1, 1, 1) + patch_y - radius
-    image_x = center_x.to(dtype=torch.long).view(-1, 1, 1) + patch_x - radius
+    patch_y = torch.arange(psf_size, device=patches.device).view(1, psf_size, 1)
+    patch_x = torch.arange(psf_size, device=patches.device).view(1, 1, psf_size)
+    image_y = center_y.to(device=patches.device, dtype=torch.long).view(-1, 1, 1) + patch_y - radius
+    image_x = center_x.to(device=patches.device, dtype=torch.long).view(-1, 1, 1) + patch_x - radius
     valid = (image_y >= 0) & (image_y < int(height)) & (image_x >= 0) & (image_x < int(width))
     image_y = image_y.expand_as(patches).clamp(0, int(height) - 1)
     image_x = image_x.expand_as(patches).clamp(0, int(width) - 1)
     flat = (image_y * int(width) + image_x)[valid]
     frame.reshape(-1).scatter_add_(0, flat.reshape(-1), patches[valid].reshape(-1))
     return frame
+
+
+def _place_patches_frames(
+    patches: torch.Tensor,
+    *,
+    frame_count: int,
+    height: int,
+    width: int,
+    frame_indices: torch.Tensor,
+    center_x: torch.Tensor,
+    center_y: torch.Tensor,
+) -> torch.Tensor:
+    with time_block("place_patches_frames"):
+        frames = torch.zeros((int(frame_count), int(height), int(width)), dtype=patches.dtype, device=patches.device)
+        if patches.numel() == 0:
+            return frames
+        psf_size = int(patches.shape[-1])
+        radius = psf_size // 2
+        patch_y = torch.arange(psf_size, device=patches.device).view(1, psf_size, 1)
+        patch_x = torch.arange(psf_size, device=patches.device).view(1, 1, psf_size)
+        image_y = center_y.to(device=patches.device, dtype=torch.long).view(-1, 1, 1) + patch_y - radius
+        image_x = center_x.to(device=patches.device, dtype=torch.long).view(-1, 1, 1) + patch_x - radius
+        valid = (image_y >= 0) & (image_y < int(height)) & (image_x >= 0) & (image_x < int(width))
+        image_y = image_y.expand_as(patches).clamp(0, int(height) - 1)
+        image_x = image_x.expand_as(patches).clamp(0, int(width) - 1)
+        frame = frame_indices.to(device=patches.device, dtype=torch.long).view(-1, 1, 1).expand_as(patches)
+        flat = (frame * int(height) * int(width) + image_y * int(width) + image_x)[valid]
+        frames.reshape(-1).scatter_add_(0, flat.reshape(-1), patches[valid].reshape(-1))
+        return frames
 
 
 def _sample_range(

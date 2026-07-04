@@ -1,6 +1,7 @@
 from .geometry import (
     build_emitter_centered_candidates,
     build_roi_candidate,
+    build_sliding_window_guided_candidates,
     clamp_roi_origin,
     grid_cell_id_for_xy,
     roi_overlap_fraction,
@@ -30,6 +31,7 @@ __all__ = [
     "build_emitter_centered_candidates",
     "build_roi_bank_from_inference",
     "build_roi_candidate",
+    "build_sliding_window_guided_candidates",
     "clamp_roi_origin",
     "grid_cell_id_for_xy",
     "load_roi_bank",

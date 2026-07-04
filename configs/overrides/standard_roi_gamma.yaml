@@ -8,6 +8,7 @@ train:
   online_generation:
     enabled: true
     steps_per_epoch: 417
+    vector_batch_size: 1024
     height: 128
     width: 128
     channels: 3
@@ -81,6 +82,8 @@ train:
     max_sampling_rounds: 20
     gamma_steps: 100
     gamma_lr: 0.025
+    checkpoint_policy: final_step
+    renderer_batch_size: 128
     num_posterior_samples: 25
     roi_bank_objective: importance_wake
     candidate_probability_threshold: 0.3
@@ -91,7 +94,7 @@ train:
     roi_size_px: 128
     roi_bank_over_cut_px: 8
     roi_bank_projection_emitter_chunk_size: 4096
-    roi_bank_projection_sample_batch_size: 16
+    roi_bank_projection_sample_batch_size: 128
     auto_heldout_fraction: 0.1
     auto_heldout_min_rois: 20
     auto_heldout_max_rois: 20

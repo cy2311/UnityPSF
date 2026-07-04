@@ -12,6 +12,7 @@ from neptune_v03.localization.conditioning import FullResZernikeConditioning
 from neptune_v03.localization.model import LocalizationModelOutput
 from neptune_v03.localization.smlm_output import SMLMOutputChannels
 from neptune_v03.roi_library import ROIRecord
+from neptune_v03.runtime.profiling import time_block
 
 
 @dataclass(frozen=True)
@@ -151,35 +152,42 @@ class CurrentROILibraryPosteriorSampler:
                     rounds_completed = int(round_index) + 1
                     for start in range(0, len(round_records), batch_size):
                         batch_records = tuple(round_records[start : start + batch_size])
-                        frames_photon = torch.stack([_raw_window(record) for record in batch_records], dim=0)
-                        frames_adu = _camera_forward_adu(frames_photon, self.config.camera_backward)
-                        if self.frame_proc is not None:
-                            model_input: Any = _apply_frame_proc(frames_adu, self.frame_proc)
-                        else:
-                            model_input = _normalize_model_input(
-                                frames_adu,
-                                input_offset=float(self.config.input_offset),
-                                input_scale=float(self.config.input_scale),
-                            )
+                        with time_block("posterior_current_model_raw_stack"):
+                            frames_photon = torch.stack([_raw_window(record) for record in batch_records], dim=0)
+                        with time_block("posterior_current_model_camera_forward"):
+                            frames_adu = _camera_forward_adu(frames_photon, self.config.camera_backward)
+                        with time_block("posterior_current_model_preprocess"):
+                            if self.frame_proc is not None:
+                                model_input: Any = _apply_frame_proc(frames_adu, self.frame_proc)
+                            else:
+                                model_input = _normalize_model_input(
+                                    frames_adu,
+                                    input_offset=float(self.config.input_offset),
+                                    input_scale=float(self.config.input_scale),
+                                )
                         if self.condition_builder is not None:
-                            model_input = self.condition_builder(batch_records, model_input)
-                        loc_output = self.model(_move_model_input(model_input, self.device))
-                        batch_samples = _posterior_samples_from_loc_output(
-                            loc_output,
-                            records=batch_records,
-                            sample_index_base=len(all_samples),
-                            posterior_group_id_base=int(posterior_group_id_base),
-                            config=self.config,
-                            generator=generator,
-                        )
+                            with time_block("posterior_current_model_condition"):
+                                model_input = self.condition_builder(batch_records, model_input)
+                        with time_block("posterior_current_model_infer"):
+                            loc_output = self.model(_move_model_input(model_input, self.device))
+                        with time_block("posterior_current_model_decode_sample"):
+                            batch_samples = _posterior_samples_from_loc_output(
+                                loc_output,
+                                records=batch_records,
+                                sample_index_base=len(all_samples),
+                                posterior_group_id_base=int(posterior_group_id_base),
+                                config=self.config,
+                                generator=generator,
+                            )
                         posterior_group_id_base += len(batch_records)
-                        selected_batch_samples, cap_summary = _take_complete_posterior_groups(
-                            batch_samples,
-                            current_emitters=int(sampled_emitters),
-                            target_emitters=int(self.config.target_projected_emitters),
-                            current_groups=len({_posterior_group_id(sample) for sample in all_samples}),
-                            max_groups=self.config.roi_groups_per_update,
-                        )
+                        with time_block("posterior_current_model_take_groups"):
+                            selected_batch_samples, cap_summary = _take_complete_posterior_groups(
+                                batch_samples,
+                                current_emitters=int(sampled_emitters),
+                                target_emitters=int(self.config.target_projected_emitters),
+                                current_groups=len({_posterior_group_id(sample) for sample in all_samples}),
+                                max_groups=self.config.roi_groups_per_update,
+                            )
                         target_cap_group_skipped += int(cap_summary["target_cap_group_skipped"])
                         target_cap_emitter_skipped_after_target += int(cap_summary["target_cap_emitter_skipped_after_target"])
                         all_samples.extend(selected_batch_samples)

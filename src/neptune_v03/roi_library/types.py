@@ -59,6 +59,10 @@ class ROICandidate:
     emitter_indices: tuple[int, ...]
     emitter_count: int
     quality_score: float
+    origin_bank_index: int | None = None
+    valid_core_origin_xy_px: tuple[int, int] | None = None
+    valid_core_offset_xy_px: tuple[int, int] | None = None
+    valid_core_size_px: int | None = None
 
 
 @dataclass(frozen=True)

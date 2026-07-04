@@ -24,6 +24,7 @@ class ActiveSMLMLoss:
         z_scale: float | None = None,
         z_activation: str = "tanh",
         sigma_min: float = 1e-3,
+        record_components: bool = False,
     ) -> None:
         self.detection_weight = float(detection_weight)
         self.pxyz_weight = float(pxyz_weight)
@@ -33,6 +34,7 @@ class ActiveSMLMLoss:
         self.z_scale = None if z_scale is None else float(z_scale)
         self.z_activation = str(z_activation).strip().lower()
         self.sigma_min = float(sigma_min)
+        self.record_components = bool(record_components)
         self.last_components: dict[str, float] | None = None
 
     def forward(
@@ -62,13 +64,14 @@ class ActiveSMLMLoss:
             + self.background_weight * bg_loss
             + self.sigma_weight * sigma_loss
         )
-        self.last_components = {
-            "loss_detect": float(detect_loss.detach().mean().cpu().item()),
-            "loss_pxyz": float(pxyz_loss.detach().mean().cpu().item()),
-            "loss_bg": float(bg_loss.detach().mean().cpu().item()),
-            "loss_sigma": float(sigma_loss.detach().mean().cpu().item()),
-            "loss_total": float(total.detach().mean().cpu().item()),
-        }
+        if self.record_components:
+            self.last_components = {
+                "loss_detect": float(detect_loss.detach().mean().cpu().item()),
+                "loss_pxyz": float(pxyz_loss.detach().mean().cpu().item()),
+                "loss_bg": float(bg_loss.detach().mean().cpu().item()),
+                "loss_sigma": float(sigma_loss.detach().mean().cpu().item()),
+                "loss_total": float(total.detach().mean().cpu().item()),
+            }
         return total
 
 
@@ -141,6 +144,7 @@ class ActiveSMLMGMMLoss:
         gmm_backend: str = "manual_chunked",
         target_order: str = "legacy_iwae",
         eps: float = 1e-8,
+        record_components: bool = False,
     ) -> None:
         self.offset_x = float(xyoffset[0])
         self.offset_y = float(xyoffset[1])
@@ -155,6 +159,7 @@ class ActiveSMLMGMMLoss:
         self.gmm_component_chunk = int(gmm_component_chunk) if gmm_component_chunk is not None else 0
         self.gmm_backend = str(gmm_backend or "manual_chunked").strip().lower()
         self.eps = float(eps)
+        self.record_components = bool(record_components)
         self.last_components: dict[str, float] | None = None
 
     def forward(
@@ -178,11 +183,12 @@ class ActiveSMLMGMMLoss:
         weights = y_out.new_tensor(self.ch_weight)
         loss = 2.0 * torch.stack((loss_gmm, loss_bkg), dim=1) * weights.unsqueeze(0)
         total = loss.sum(dim=1)
-        self.last_components = {
-            "loss_gmm": float(loss_gmm.detach().mean().cpu().item()),
-            "loss_bkg": float(loss_bkg.detach().mean().cpu().item()),
-            "loss_total": float(total.detach().mean().cpu().item()),
-        }
+        if self.record_components:
+            self.last_components = {
+                "loss_gmm": float(loss_gmm.detach().mean().cpu().item()),
+                "loss_bkg": float(loss_bkg.detach().mean().cpu().item()),
+                "loss_total": float(total.detach().mean().cpu().item()),
+            }
         return loss
 
     def _compute_gmm_terms(

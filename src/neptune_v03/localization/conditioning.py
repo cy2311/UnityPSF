@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
 from typing import Mapping
 
 import numpy as np
@@ -161,6 +162,9 @@ class ConditioningProviderStore:
     def __init__(self, providers: tuple[tuple[str | None, FullResZernikeConditioning], ...] | None = None) -> None:
         self._providers = providers
         self._version = 0
+        self._listeners: list[
+            Callable[[int, tuple[tuple[str | None, FullResZernikeConditioning], ...] | None], None]
+        ] = []
 
     @classmethod
     def from_coeff_maps(cls, coeff_maps: tuple[Mapping[str, str], ...] | list[Mapping[str, str]]):
@@ -173,9 +177,24 @@ class ConditioningProviderStore:
     def snapshot(self) -> tuple[int, tuple[tuple[str | None, FullResZernikeConditioning], ...] | None]:
         return self.version, self._providers
 
+    def add_update_listener(
+        self,
+        listener: Callable[[int, tuple[tuple[str | None, FullResZernikeConditioning], ...] | None], None],
+    ) -> None:
+        self._listeners.append(listener)
+
     def update_from_coeff_maps(self, coeff_maps: tuple[Mapping[str, str], ...] | list[Mapping[str, str]]) -> None:
         self._providers = _load_conditioning_providers(coeff_maps)
         self._version += 1
+        self._notify_update_listeners()
+
+    def mark_updated(self) -> None:
+        self._version += 1
+        self._notify_update_listeners()
+
+    def _notify_update_listeners(self) -> None:
+        for listener in tuple(self._listeners):
+            listener(self.version, self._providers)
 
 
 def _load_conditioning_providers(

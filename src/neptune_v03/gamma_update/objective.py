@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from neptune_v03.localization.posterior import DetectionPosteriorSamples
 from neptune_v03.optics.nat_field import NATFieldConfig, default_order1_config, evaluate_zernike_from_roi_positions_torch
 from neptune_v03.optics.vector_psf import VectorPSFParams, build_vector_psf_context, noll_to_nm, render_vector_psf_bank
+from neptune_v03.runtime.profiling import time_block
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,7 @@ class GammaProjectionObjectiveConfig:
     refimm: float = 1.518
     objstage0: float = 0.0
     otf_rescale_xy: tuple[float, float] = (0.0, 0.0)
-    renderer_batch_size: int = 64
+    renderer_batch_size: int = 128
     over_cut_px: int = 0
     eps: float = 1e-6
     base_coeff_maps: tuple[tuple[str, str], ...] = ()
@@ -95,6 +96,7 @@ class GammaProjectionObjective:
         background: torch.Tensor,
         roi_origin_xy_px: torch.Tensor | None = None,
         domain_names: list[str] | tuple[str, ...] | None = None,
+        loss_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         gamma_t = gamma.to(device=self.device, dtype=torch.float32).reshape(-1)
         if int(gamma_t.numel()) != self.gamma_size:
@@ -112,8 +114,15 @@ class GammaProjectionObjective:
             bkg_all = bkg_all.unsqueeze(0).expand(raw_all.shape[0], -1, -1)
         if bkg_all.shape != raw_all.shape:
             raise ValueError(f"background shape {tuple(bkg_all.shape)} must match raw shape {tuple(raw_all.shape)}")
+        loss_mask_all = None
+        if loss_mask is not None:
+            loss_mask_all = torch.as_tensor(loss_mask, dtype=torch.bool)
+            if loss_mask_all.ndim == 4:
+                loss_mask_all = loss_mask_all[:, loss_mask_all.shape[1] // 2]
+            if loss_mask_all.shape != raw_all.shape:
+                raise ValueError(f"loss_mask shape {tuple(loss_mask_all.shape)} must match raw shape {tuple(raw_all.shape)}")
 
-        xyzph_all = samples.xyzph.detach()
+        xyzph_all = samples.xyzph.detach().to(dtype=torch.float32)
         mask_all = samples.mask.detach()
         if xyzph_all.ndim != 3 or int(xyzph_all.shape[-1]) != 4:
             raise ValueError(f"samples.xyzph must have shape (B,N,4), got {tuple(xyzph_all.shape)}")
@@ -145,6 +154,7 @@ class GammaProjectionObjective:
                 mask=mask_all[start:stop],
                 roi_origin_xy_px=chunk_origin,
                 domain_names=chunk_domain_names,
+                loss_mask=None if loss_mask_all is None else loss_mask_all[start:stop],
             )
             total_nll = total_nll + chunk["nll_sum"]
             total_pixels += int(chunk["pixel_count"])
@@ -174,6 +184,7 @@ class GammaProjectionObjective:
                 "roi_projection_renderer": 1.0,
                 "roi_projection_base_coeff_maps_enabled": 1.0 if self.base_maps_by_domain else 0.0,
                 "roi_projection_poisson_nll": float(poisson_loss.detach().cpu().item()),
+                "roi_projection_loss_pixel_count": float(total_pixels),
                 "roi_projection_sample_batch_size": float(sample_chunk),
                 "roi_projection_sample_chunk_count": float(math.ceil(int(raw_all.shape[0]) / sample_chunk)),
                 "roi_projection_emitter_chunk_size": float(max(1, int(self.config.projection_emitter_chunk_size))),
@@ -191,6 +202,7 @@ class GammaProjectionObjective:
         mask: torch.Tensor,
         roi_origin_xy_px: torch.Tensor | None,
         domain_names: list[str] | tuple[str, ...] | None,
+        loss_mask: torch.Tensor | None,
     ) -> dict[str, torch.Tensor | int]:
         raw = raw_frames.to(device=self.device, dtype=torch.float32)
         bkg = background.to(device=self.device, dtype=torch.float32)
@@ -248,10 +260,18 @@ class GammaProjectionObjective:
         expected = projected_signal + bkg
         raw_c, expected_c = _crop(raw, expected, int(self.config.over_cut_px))
         nll_per_pixel = poisson_nll(raw_c, expected_c, eps=float(self.config.eps))
+        if loss_mask is not None:
+            mask_c = _crop_mask(loss_mask.to(device=self.device, dtype=torch.bool), int(self.config.over_cut_px))
+            if not bool(mask_c.any()):
+                raise ValueError("loss_mask selected zero pixels")
+            nll_per_pixel = nll_per_pixel[mask_c]
+            log_p_per_sample = -poisson_nll(raw_c, expected_c, eps=float(self.config.eps)).masked_fill(~mask_c, 0.0).flatten(start_dim=1).sum(dim=1)
+        else:
+            log_p_per_sample = -nll_per_pixel.flatten(start_dim=1).sum(dim=1)
         return {
             "nll_sum": nll_per_pixel.sum(),
             "pixel_count": int(nll_per_pixel.numel()),
-            "log_p_per_sample": -nll_per_pixel.flatten(start_dim=1).sum(dim=1),
+            "log_p_per_sample": log_p_per_sample,
             "valid_emitters": int(active.sum().item()),
             "projected_photons": projected_signal.sum(),
             "background_sum": bkg.sum(),
@@ -285,7 +305,14 @@ class GammaProjectionObjective:
             origin = torch.as_tensor(roi_origin_xy_px, dtype=torch.float32)[int(batch_index) : int(batch_index) + 1]
         if domain_names is not None:
             names = [str(domain_names[int(batch_index)])]
-        self(gamma=gamma, samples=sample, raw_frames=zero_raw, background=bkg.unsqueeze(0), roi_origin_xy_px=origin, domain_names=names)
+        self(
+            gamma=gamma,
+            samples=sample,
+            raw_frames=zero_raw,
+            background=bkg.unsqueeze(0),
+            roi_origin_xy_px=origin,
+            domain_names=names,
+        )
         projected_plus_bkg = self._last_reconstruction(
             gamma=gamma,
             samples=sample,
@@ -374,7 +401,14 @@ class GammaProjectionObjective:
     ) -> torch.Tensor:
         with torch.enable_grad():
             raw = torch.zeros_like(torch.as_tensor(background, dtype=torch.float32, device=self.device))
-            self(gamma=gamma, samples=samples, raw_frames=raw, background=background, roi_origin_xy_px=roi_origin_xy_px, domain_names=domain_names)
+            self(
+                gamma=gamma,
+                samples=samples,
+                raw_frames=raw,
+                background=background,
+                roi_origin_xy_px=roi_origin_xy_px,
+                domain_names=domain_names,
+            )
             # Recompute without log-likelihood side effects for diagnostic output.
             bkg = torch.as_tensor(background, dtype=torch.float32, device=self.device)
             xyzph = samples.xyzph.detach().to(device=self.device, dtype=torch.float32)
@@ -483,19 +517,21 @@ class GammaProjectionObjective:
         coeffs_nm: torch.Tensor,
     ) -> torch.Tensor:
         coeffs_rad = coeffs_nm * (2.0 * math.pi / max(float(self.config.wavelength_nm), 1e-6)) * self.ctx.normfac[None, :]
-        psf = render_vector_psf_bank(
-            self.ctx,
-            coeffs_rad,
-            z_nm.to(device=self.device, dtype=torch.float32) * 1e-9,
-            out_size=int(self.config.patch_size_px),
-            batch_size=int(self.config.renderer_batch_size),
-            return_torch=True,
-        )
-        psf = _fourier_shift_patches(
-            psf,
-            shift_x_px=local_x_nm / max(float(self.config.pixel_size_x_nm), 1e-6),
-            shift_y_px=local_y_nm / max(float(self.config.pixel_size_y_nm), 1e-6),
-        ).clamp_min(0.0)
+        with time_block("render_vector_patches"):
+            psf = render_vector_psf_bank(
+                self.ctx,
+                coeffs_rad,
+                z_nm.to(device=self.device, dtype=torch.float32) * 1e-9,
+                out_size=int(self.config.patch_size_px),
+                batch_size=int(self.config.renderer_batch_size),
+                return_torch=True,
+            )
+        with time_block("fourier_shift_patches"):
+            psf = _fourier_shift_patches(
+                psf,
+                shift_x_px=local_x_nm / max(float(self.config.pixel_size_x_nm), 1e-6),
+                shift_y_px=local_y_nm / max(float(self.config.pixel_size_y_nm), 1e-6),
+            ).clamp_min(0.0)
         psf = psf / (psf.sum(dim=(-2, -1), keepdim=True) + 1e-12)
         return psf * photons.to(device=self.device, dtype=torch.float32).reshape(-1, 1, 1)
 
@@ -676,26 +712,27 @@ def _project_patches_to_frames(
     center_y_px: torch.Tensor,
     output_shape: tuple[int, int, int],
 ) -> torch.Tensor:
-    batch, height, width = (int(output_shape[0]), int(output_shape[1]), int(output_shape[2]))
-    projected = torch.zeros((batch, height, width), device=patches.device, dtype=patches.dtype)
-    if patches.numel() == 0:
+    with time_block("project_patches_to_frames"):
+        batch, height, width = (int(output_shape[0]), int(output_shape[1]), int(output_shape[2]))
+        projected = torch.zeros((batch, height, width), device=patches.device, dtype=patches.dtype)
+        if patches.numel() == 0:
+            return projected
+        patch_size = int(patches.shape[-1])
+        radius = patch_size // 2
+        yy, xx = torch.meshgrid(
+            torch.arange(patch_size, device=patches.device),
+            torch.arange(patch_size, device=patches.device),
+            indexing="ij",
+        )
+        image_x = center_x_px.to(device=patches.device, dtype=torch.long)[:, None, None] - radius + xx[None, :, :]
+        image_y = center_y_px.to(device=patches.device, dtype=torch.long)[:, None, None] - radius + yy[None, :, :]
+        batch_ix = batch_index.to(device=patches.device, dtype=torch.long)[:, None, None].expand_as(image_x)
+        valid = (batch_ix >= 0) & (batch_ix < batch) & (image_x >= 0) & (image_x < width) & (image_y >= 0) & (image_y < height)
+        if not bool(valid.any()):
+            return projected
+        flat_index = ((batch_ix * height + image_y) * width + image_x)[valid]
+        projected.reshape(-1).scatter_add_(0, flat_index.reshape(-1), patches[valid].reshape(-1))
         return projected
-    patch_size = int(patches.shape[-1])
-    radius = patch_size // 2
-    yy, xx = torch.meshgrid(
-        torch.arange(patch_size, device=patches.device),
-        torch.arange(patch_size, device=patches.device),
-        indexing="ij",
-    )
-    image_x = center_x_px.to(device=patches.device, dtype=torch.long)[:, None, None] - radius + xx[None, :, :]
-    image_y = center_y_px.to(device=patches.device, dtype=torch.long)[:, None, None] - radius + yy[None, :, :]
-    batch_ix = batch_index.to(device=patches.device, dtype=torch.long)[:, None, None].expand_as(image_x)
-    valid = (batch_ix >= 0) & (batch_ix < batch) & (image_x >= 0) & (image_x < width) & (image_y >= 0) & (image_y < height)
-    if not bool(valid.any()):
-        return projected
-    flat_index = ((batch_ix * height + image_y) * width + image_x)[valid]
-    projected.reshape(-1).scatter_add_(0, flat_index.reshape(-1), patches[valid].reshape(-1))
-    return projected
 
 
 def _crop(raw: torch.Tensor, projected: torch.Tensor, over_cut_px: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -705,3 +742,12 @@ def _crop(raw: torch.Tensor, projected: torch.Tensor, over_cut_px: int) -> tuple
     if raw.shape[-1] <= 2 * cut or raw.shape[-2] <= 2 * cut:
         raise ValueError("over_cut_px is too large for ROI dimensions")
     return raw[..., cut:-cut, cut:-cut], projected[..., cut:-cut, cut:-cut]
+
+
+def _crop_mask(mask: torch.Tensor, over_cut_px: int) -> torch.Tensor:
+    cut = int(over_cut_px)
+    if cut <= 0:
+        return mask
+    if mask.shape[-1] <= 2 * cut or mask.shape[-2] <= 2 * cut:
+        raise ValueError("over_cut_px is too large for ROI dimensions")
+    return mask[..., cut:-cut, cut:-cut]

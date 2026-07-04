@@ -5,12 +5,13 @@ import json
 import random
 import struct
 import zlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 import torch
+import tifffile
 
 from neptune_v03.config import load_config
 from neptune_v03.gamma_update import (
@@ -50,7 +51,7 @@ from neptune_v03.roi_library.loc_harvest import (
     _build_inference_frame_proc,
     build_roi_bank_from_loc_harvest,
 )
-from neptune_v03.runtime import ensure_run_layout, write_run_manifest, write_stage_status
+from neptune_v03.runtime import ensure_run_layout, profiling, write_run_manifest, write_stage_status
 from neptune_v03.training import build_trainer_runtime, train_epochs
 from neptune_v03.training.localizer_eval import build_localizer_eval_provider, localizer_eval_route, make_legacy_localization_eval_loss
 from neptune_v03.training.loop import TrainingRunEpochResult, TrainingStepResult
@@ -70,6 +71,7 @@ class _HeldoutMonitorContext:
     samples: DetectionPosteriorSamples
     roi_origin_xy_px: torch.Tensor
     domain_names: list[str]
+    loss_mask: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -82,6 +84,78 @@ class _ROIBankSource:
     alias: str | None = None
 
 
+class _DeferredGammaFeedbackCommitter:
+    """Publish multi-domain physical feedback once per update cycle."""
+
+    def __init__(
+        self,
+        *,
+        layout,
+        condition_store: ConditioningProviderStore,
+        latest_coeff_maps: dict[str, str],
+    ) -> None:
+        self.layout = layout
+        self.condition_store = condition_store
+        self.latest_coeff_maps = latest_coeff_maps
+        self.pending_domains: set[str] = set()
+        self.last_result: TrainingRunEpochResult | TrainingStepResult | None = None
+        self.last_store_entries: tuple[dict[str, str], ...] = ()
+        self.committed_this_cycle = False
+
+    def stage(
+        self,
+        *,
+        entries: tuple[tuple[str, str], ...],
+        result: TrainingRunEpochResult | TrainingStepResult,
+    ) -> tuple[dict[str, str], ...]:
+        for name, path in entries:
+            self.latest_coeff_maps[str(name)] = str(path)
+            self.pending_domains.add(str(name))
+        self.last_result = result
+        self.last_store_entries = tuple(
+            {"name": name, "coeff_maps_npz": path}
+            for name, path in sorted(self.latest_coeff_maps.items())
+        )
+        self.committed_this_cycle = False
+        return self.last_store_entries
+
+    def commit(self) -> dict[str, object]:
+        if not self.pending_domains:
+            return {
+                "feedback_deferred_commit_skipped": True,
+                "feedback_deferred_pending_domain_count": 0,
+                "condition_store_version": self.condition_store.version,
+            }
+        if self.last_result is None:
+            raise RuntimeError("deferred gamma feedback has pending domains but no trigger result")
+        if not self.last_store_entries:
+            raise RuntimeError("deferred gamma feedback has pending domains but no coeff-map entries")
+        self.condition_store.update_from_coeff_maps(self.last_store_entries)
+        state_path = _write_current_physical_state(
+            self.layout,
+            coeff_maps=self.last_store_entries,
+            source="gamma_feedback",
+            epoch=int(self.last_result.epoch),
+            global_step=int(self.last_result.global_step),
+            condition_store_version=self.condition_store.version,
+        )
+        committed = sorted(self.pending_domains)
+        self.pending_domains.clear()
+        self.committed_this_cycle = True
+        return {
+            "feedback_deferred_commit": True,
+            "feedback_deferred_committed_domains": committed,
+            "feedback_deferred_committed_domain_count": len(committed),
+            "feedback_deferred_pending_domain_count": 0,
+            "feedback_coeff_maps_all_domains": {
+                str(item["name"]): str(item["coeff_maps_npz"])
+                for item in self.last_store_entries
+            },
+            "condition_store_version": self.condition_store.version,
+            "physical_state_path": state_path,
+        }
+
+
 @dataclass(frozen=True)
 class _ROIProjectionUpdateContext:
     bank: ROIBank
@@ -91,6 +165,7 @@ class _ROIProjectionUpdateContext:
     samples: DetectionPosteriorSamples
     roi_origin_xy_px: torch.Tensor
     domain_names: list[str]
+    loss_mask: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +288,7 @@ def main() -> int:
             layout=layout,
             condition_store=condition_store,
         )
+        gamma_epoch_hook, gamma_batch_hook = _gamma_hook_bindings(gamma_hook, train_cfg.get("roi_bank_gamma"))
         eval_provider = build_localizer_eval_provider(
             train_cfg,
             config_base_dir=config_base_dir,
@@ -227,7 +303,8 @@ def main() -> int:
             batch_provider=runtime.batch_provider,
             layout=runtime.layout,
             config=runtime.config,
-            on_batch_end=gamma_hook,
+            on_epoch_end=gamma_epoch_hook,
+            on_batch_end=gamma_batch_hook,
             loss_fn=runtime.loss_fn,
             eval_provider=eval_provider,
             eval_loss_fn=eval_loss_fn,
@@ -456,6 +533,14 @@ def _build_roi_bank_gamma_hook(
     )
 
 
+def _gamma_hook_bindings(gamma_hook, gamma_cfg: object):
+    if gamma_hook is None:
+        return None, None
+    if isinstance(gamma_cfg, Mapping) and gamma_cfg.get("start_batch") is not None:
+        return None, gamma_hook
+    return gamma_hook, None
+
+
 def _build_domain_roi_bank_gamma_hooks(
     gamma_cfg: Mapping[str, Any],
     *,
@@ -481,8 +566,29 @@ def _build_domain_roi_bank_gamma_hooks(
         str(domain): str(path)
         for domain, path in _base_coeff_maps_from_gamma_cfg(gamma_cfg) or _base_coeff_maps_from_train_cfg(train_cfg)
     }
-    for domain_name in sorted(splits):
+    domain_order = tuple(sorted(splits))
+    deferred_committer = (
+        _DeferredGammaFeedbackCommitter(
+            layout=layout,
+            condition_store=condition_store,
+            latest_coeff_maps=latest_coeff_maps,
+        )
+        if condition_store is not None and len(domain_order) > 1
+        else None
+    )
+    final_domain = domain_order[-1] if domain_order else None
+    for domain_name in domain_order:
         domain_selected, domain_heldout = splits[domain_name]
+        domain_heldout_mode = (
+            heldout_mode
+            if domain_heldout is not None or heldout_mode == "disabled_insufficient_records"
+            else "not_configured"
+        )
+        domain_heldout_split_source = (
+            heldout_split_source
+            if domain_heldout is not None or heldout_mode == "disabled_insufficient_records"
+            else None
+        )
         objective = _build_vector_roi_gamma_objective(gamma_cfg, train_cfg=train_cfg, config=config, model=model)
         objectives[domain_name] = objective
         objective_fn, metrics_fn, prepare_fn = _build_roi_projection_objective(
@@ -492,8 +598,8 @@ def _build_domain_roi_bank_gamma_hooks(
             objective_source=objective_source,
             roi_library_path=roi_library_path,
             heldout_bank=domain_heldout,
-            heldout_mode=heldout_mode if domain_heldout is not None else "not_configured",
-            heldout_split_source=heldout_split_source if domain_heldout is not None else None,
+            heldout_mode=domain_heldout_mode,
+            heldout_split_source=domain_heldout_split_source,
             layout=layout,
             roi_library_source=roi_library_source,
             roi_bank_source=roi_bank_source,
@@ -516,6 +622,8 @@ def _build_domain_roi_bank_gamma_hooks(
                     condition_store=condition_store,
                     domain_names=(domain_name,),
                     latest_coeff_maps=latest_coeff_maps,
+                    deferred_committer=deferred_committer,
+                    commit_deferred=bool(deferred_committer is not None and domain_name == final_domain),
                 ),
             )
         )
@@ -525,6 +633,10 @@ def _build_domain_roi_bank_gamma_hooks(
     def hook(result: TrainingRunEpochResult | TrainingStepResult) -> None:
         for item in hooks:
             item(result)
+        if deferred_committer is not None and deferred_committer.pending_domains:
+            with profiling.time_block("deferred_gamma_feedback_commit_fallback"):
+                deferred_committer.commit()
+            profiling.drain()
 
     return hook
 
@@ -543,6 +655,7 @@ def _gamma_update_config(gamma_cfg: Mapping[str, Any], train_cfg: Mapping[str, A
         else int(gamma_cfg["update_interval_batches"]),
         optimizer=str(gamma_cfg.get("gamma_optimizer", gamma_cfg.get("optimizer", "adam"))),
         heldout_accept_policy=str(gamma_cfg.get("heldout_accept_policy", "monitor")),
+        checkpoint_policy=str(gamma_cfg.get("checkpoint_policy", gamma_cfg.get("selected_checkpoint_policy", "final_step"))),
     )
 
 
@@ -585,6 +698,8 @@ def _build_gamma_feedback_fn(
     condition_store: ConditioningProviderStore | None,
     domain_names: tuple[str, ...] | None = None,
     latest_coeff_maps: dict[str, str] | None = None,
+    deferred_committer: _DeferredGammaFeedbackCommitter | None = None,
+    commit_deferred: bool = False,
 ):
     if condition_store is None or not objective.base_maps_by_domain:
         return None
@@ -602,6 +717,21 @@ def _build_gamma_feedback_fn(
             epoch=int(result.epoch),
             global_step=int(result.global_step),
         )
+        if deferred_committer is not None:
+            store_entries = deferred_committer.stage(entries=entries, result=result)
+            output: dict[str, object] = {
+                "feedback_coeff_maps": {name: path for name, path in entries},
+                "feedback_coeff_maps_all_domains": {str(item["name"]): str(item["coeff_maps_npz"]) for item in store_entries},
+                "feedback_domain_names": [name for name, _path in entries],
+                "feedback_deferred": True,
+                "feedback_deferred_commit": False,
+                "feedback_deferred_pending_domain_count": len(deferred_committer.pending_domains),
+                "condition_store_version": condition_store.version,
+            }
+            if commit_deferred:
+                with profiling.time_block("deferred_gamma_feedback_commit"):
+                    output.update(deferred_committer.commit())
+            return output
         if latest_coeff_maps is not None:
             for name, path in entries:
                 latest_coeff_maps[str(name)] = str(path)
@@ -820,6 +950,8 @@ def _should_run_gamma_update(result: TrainingRunEpochResult | TrainingStepResult
         if config.stop_batch is not None and batch > int(config.stop_batch):
             return False
         return (batch - int(config.start_batch)) % int(config.update_interval_batches or 1) == 0
+    if isinstance(result, TrainingStepResult):
+        return False
     epoch = int(result.epoch)
     if epoch < int(config.start_epoch) or epoch > int(config.stop_epoch):
         return False
@@ -1089,22 +1221,23 @@ def _sample_roi_bank_posterior_update_from_cached_emitters(
     *,
     epoch: int,
 ) -> tuple[_ROIProjectionUpdateContext, dict[str, object]]:
-    records = tuple(bank.records)
-    if not records:
-        raise ValueError("posterior ROI-bank update requires at least one ROI record")
-    target_emitters = int(gamma_cfg.get("target_projected_emitters", gamma_cfg.get("target_emitters", len(records))))
-    max_rounds = max(1, int(gamma_cfg.get("max_sampling_rounds", 1)))
-    seed = int(gamma_cfg.get("seed", 0))
-    roi_groups_raw = gamma_cfg.get("roi_groups_per_update")
-    roi_groups_per_update = None if roi_groups_raw is None else int(roi_groups_raw)
-    sample_count = int(gamma_cfg.get("num_posterior_samples", 1))
-    probability_threshold = float(gamma_cfg.get("probability_threshold", gamma_cfg.get("posterior_probability_threshold", 0.5)))
-    stochastic_existence = bool(gamma_cfg.get("stochastic_existence", False))
-    sample_continuous = bool(gamma_cfg.get("sample_continuous", True))
-    roi_size_px = int(gamma_cfg.get("roi_size_px", 128))
-    over_cut_px = int(gamma_cfg.get("roi_bank_over_cut_px", gamma_cfg.get("over_cut_px", 0)))
-    min_photons = float(gamma_cfg.get("min_photons", 1e-3))
-    z_range_nm = _z_range_nm_from_gamma_cfg(gamma_cfg)
+    with profiling.time_block("posterior_cached_setup"):
+        records = tuple(bank.records)
+        if not records:
+            raise ValueError("posterior ROI-bank update requires at least one ROI record")
+        target_emitters = int(gamma_cfg.get("target_projected_emitters", gamma_cfg.get("target_emitters", len(records))))
+        max_rounds = max(1, int(gamma_cfg.get("max_sampling_rounds", 1)))
+        seed = int(gamma_cfg.get("seed", 0))
+        roi_groups_raw = gamma_cfg.get("roi_groups_per_update")
+        roi_groups_per_update = None if roi_groups_raw is None else int(roi_groups_raw)
+        sample_count = int(gamma_cfg.get("num_posterior_samples", 1))
+        probability_threshold = float(gamma_cfg.get("probability_threshold", gamma_cfg.get("posterior_probability_threshold", 0.5)))
+        stochastic_existence = bool(gamma_cfg.get("stochastic_existence", False))
+        sample_continuous = bool(gamma_cfg.get("sample_continuous", True))
+        roi_size_px = int(gamma_cfg.get("roi_size_px", 128))
+        over_cut_px = int(gamma_cfg.get("roi_bank_over_cut_px", gamma_cfg.get("over_cut_px", 0)))
+        min_photons = float(gamma_cfg.get("min_photons", 1e-3))
+        z_range_nm = _z_range_nm_from_gamma_cfg(gamma_cfg)
 
     sample_rows: list[dict[str, Any]] = []
     sampled_emitters = 0
@@ -1122,19 +1255,20 @@ def _sample_roi_bank_posterior_update_from_cached_emitters(
         random.Random(round_seed).shuffle(round_records)
         rounds += 1
         for record_index, record in enumerate(round_records):
-            rows = _sample_record_posterior_rows(
-                record,
-                num_posterior_samples=sample_count,
-                probability_threshold=probability_threshold,
-                stochastic_existence=stochastic_existence,
-                sample_continuous=sample_continuous,
-                seed=round_seed + int(record_index) * 1000003,
-                roi_size_px=roi_size_px,
-                z_range_nm=z_range_nm,
-                min_photons=min_photons,
-                over_cut_px=over_cut_px,
-                posterior_group_id_base=group_base,
-            )
+            with profiling.time_block("posterior_cached_record_sampling"):
+                rows = _sample_record_posterior_rows(
+                    record,
+                    num_posterior_samples=sample_count,
+                    probability_threshold=probability_threshold,
+                    stochastic_existence=stochastic_existence,
+                    sample_continuous=sample_continuous,
+                    seed=round_seed + int(record_index) * 1000003,
+                    roi_size_px=roi_size_px,
+                    z_range_nm=z_range_nm,
+                    min_photons=min_photons,
+                    over_cut_px=over_cut_px,
+                    posterior_group_id_base=group_base,
+                )
             group_base += max(1, len({int(row["posterior_group_id"]) for row in rows}))
             empty_posterior_rows_dropped += sum(1 for row in rows if int(row["emitter_count"]) <= 0)
             rows = [row for row in rows if int(row["emitter_count"]) > 0]
@@ -1159,11 +1293,12 @@ def _sample_roi_bank_posterior_update_from_cached_emitters(
 
     if not sample_rows:
         raise ValueError("posterior ROI-bank update selected no samples")
-    context = _posterior_rows_to_context(
-        sample_rows,
-        bank=bank,
-        sampling_metrics={},
-    )
+    with profiling.time_block("posterior_cached_context_build"):
+        context = _posterior_rows_to_context(
+            sample_rows,
+            bank=bank,
+            sampling_metrics={},
+        )
     group_sizes: dict[int, int] = {}
     for row in sample_rows:
         group_sizes[int(row["posterior_group_id"])] = group_sizes.get(int(row["posterior_group_id"]), 0) + 1
@@ -1207,6 +1342,7 @@ def _sample_roi_bank_posterior_update_from_cached_emitters(
         samples=context.samples,
         roi_origin_xy_px=context.roi_origin_xy_px,
         domain_names=context.domain_names,
+        loss_mask=context.loss_mask,
     )
     return context, metrics
 
@@ -1278,9 +1414,11 @@ def _sample_roi_bank_posterior_update_from_current_model(
         condition_builder=condition_builder,
         frame_proc=frame_proc,
     )
-    samples, metrics = sampler(records, step_index=int(step_index))
-    nonempty_samples = tuple(sample for sample in samples if int(sample.emitter_count) > 0)
-    empty_posterior_rows_dropped = int(len(samples) - len(nonempty_samples))
+    with profiling.time_block("posterior_current_model_sampler_total"):
+        samples, metrics = sampler(records, step_index=int(step_index))
+    with profiling.time_block("posterior_current_model_filter_nonempty"):
+        nonempty_samples = tuple(sample for sample in samples if int(sample.emitter_count) > 0)
+        empty_posterior_rows_dropped = int(len(samples) - len(nonempty_samples))
     if not nonempty_samples:
         raise ValueError("posterior ROI-bank update selected no samples")
     nonempty_roi_ids = sorted({int(sample.roi_id) for sample in nonempty_samples})
@@ -1295,7 +1433,53 @@ def _sample_roi_bank_posterior_update_from_current_model(
         "empty_posterior_rows_dropped": int(empty_posterior_rows_dropped),
         "posterior_log_q_available_count": int(sum(1 for sample in nonempty_samples if sample.log_q_h_given_x is not None)),
     }
-    return _sampled_emitter_sets_to_context(nonempty_samples, bank=bank, sampling_metrics=metrics), metrics
+    with profiling.time_block("posterior_current_model_context_build"):
+        context = _sampled_emitter_sets_to_context(nonempty_samples, bank=bank, sampling_metrics=metrics)
+    return context, metrics
+
+
+def _sample_roi_bank_importance_update_context(
+    bank: ROIBank,
+    gamma_cfg: Mapping[str, Any],
+    *,
+    model: torch.nn.Module,
+    train_cfg: Mapping[str, Any],
+    step_index: int,
+) -> tuple[_ROIProjectionUpdateContext, dict[str, object]]:
+    try:
+        return _sample_roi_bank_posterior_update_from_current_model(
+            bank,
+            gamma_cfg,
+            model=model,
+            train_cfg=train_cfg,
+            step_index=int(step_index),
+        )
+    except ValueError as exc:
+        if "selected no samples" not in str(exc):
+            raise
+    context, metrics = _sample_roi_bank_posterior_update_from_cached_emitters(
+        bank,
+        gamma_cfg,
+        epoch=int(step_index),
+    )
+    metrics = {
+        **metrics,
+        "posterior_sampling_fallback": "roi_record_emitters_after_empty_current_model",
+        "current_model_empty_posterior": True,
+    }
+    return (
+        _ROIProjectionUpdateContext(
+            bank=context.bank,
+            sampling_metrics=metrics,
+            raw_frames=context.raw_frames,
+            background=context.background,
+            samples=context.samples,
+            roi_origin_xy_px=context.roi_origin_xy_px,
+            domain_names=context.domain_names,
+            loss_mask=context.loss_mask,
+        ),
+        metrics,
+    )
 
 
 def _sample_record_posterior_rows(
@@ -1399,19 +1583,22 @@ def _posterior_rows_to_context(
 ) -> _ROIProjectionUpdateContext:
     if not rows:
         raise ValueError("posterior rows must be non-empty")
-    raw_frames = torch.stack([_record_observed_frame(row["record"], frame_index=int(row["frame_index"])) for row in rows], dim=0)
-    background = torch.stack([torch.as_tensor(row["record"].background_smoothed, dtype=torch.float32) for row in rows], dim=0)
-    max_emitters = max(1, max(int(row["emitter_count"]) for row in rows))
-    xyzph = torch.zeros((len(rows), max_emitters, 4), dtype=torch.float32)
-    mask = torch.zeros((len(rows), max_emitters), dtype=torch.bool)
-    for batch_idx, row in enumerate(rows):
-        count = int(row["emitter_count"])
-        if count <= 0:
-            continue
-        xyzph[batch_idx, :count, 0:2] = row["xy"]
-        xyzph[batch_idx, :count, 2] = row["z"]
-        xyzph[batch_idx, :count, 3] = row["photons"]
-        mask[batch_idx, :count] = True
+    with profiling.time_block("posterior_rows_context_raw_stack"):
+        raw_frames = torch.stack([_record_observed_frame(row["record"], frame_index=int(row["frame_index"])) for row in rows], dim=0)
+    with profiling.time_block("posterior_rows_context_background_stack"):
+        background = torch.stack([torch.as_tensor(row["record"].background_smoothed, dtype=torch.float32) for row in rows], dim=0)
+    with profiling.time_block("posterior_rows_context_xyzph_pack"):
+        max_emitters = max(1, max(int(row["emitter_count"]) for row in rows))
+        xyzph = torch.zeros((len(rows), max_emitters, 4), dtype=torch.float32)
+        mask = torch.zeros((len(rows), max_emitters), dtype=torch.bool)
+        for batch_idx, row in enumerate(rows):
+            count = int(row["emitter_count"])
+            if count <= 0:
+                continue
+            xyzph[batch_idx, :count, 0:2] = row["xy"]
+            xyzph[batch_idx, :count, 2] = row["z"]
+            xyzph[batch_idx, :count, 3] = row["photons"]
+            mask[batch_idx, :count] = True
     samples = DetectionPosteriorSamples(
         xyzph=xyzph,
         mask=mask,
@@ -1420,11 +1607,15 @@ def _posterior_rows_to_context(
             "source": "roi_record_posterior_samples",
             "log_q_h_given_x": [None if row.get("log_q_h_given_x") is None else float(row["log_q_h_given_x"]) for row in rows],
             "posterior_group_id": [int(row["posterior_group_id"]) for row in rows],
+            "roi_id": [int(row["record"].roi_id) for row in rows],
+            "frame_index": [int(row["frame_index"]) for row in rows],
         },
     )
-    origins = torch.as_tensor([row["record"].roi_origin_xy_px for row in rows], dtype=torch.float32)
-    domain_names = [str(row["record"].domain_name) for row in rows]
-    selected_records = tuple({int(row["record"].roi_id): row["record"] for row in rows}.values())
+    with profiling.time_block("posterior_rows_context_metadata"):
+        origins = torch.as_tensor([row["record"].roi_origin_xy_px for row in rows], dtype=torch.float32)
+        domain_names = [str(row["record"].domain_name) for row in rows]
+        loss_mask = _stack_record_loss_masks([row["record"] for row in rows])
+        selected_records = tuple({int(row["record"].roi_id): row["record"] for row in rows}.values())
     return _ROIProjectionUpdateContext(
         bank=ROIBank(
             records=selected_records,
@@ -1439,6 +1630,7 @@ def _posterior_rows_to_context(
         samples=samples,
         roi_origin_xy_px=origins,
         domain_names=domain_names,
+        loss_mask=loss_mask,
     )
 
 
@@ -1451,32 +1643,35 @@ def _sampled_emitter_sets_to_context(
     if not samples:
         raise ValueError("posterior samples must be non-empty")
     records_by_id = {int(record.roi_id): record for record in bank.records}
-    raw_frames = torch.stack(
-        [_record_observed_frame(records_by_id[int(sample.roi_id)], frame_index=int(sample.frame_index)) for sample in samples],
-        dim=0,
-    )
-    background = torch.stack(
-        [
-            (
-                torch.as_tensor(sample.background_smoothed, dtype=torch.float32)
-                if sample.background_smoothed is not None
-                else torch.as_tensor(records_by_id[int(sample.roi_id)].background_smoothed, dtype=torch.float32)
-            )
-            for sample in samples
-        ],
-        dim=0,
-    )
-    max_emitters = max(1, max(int(sample.emitter_count) for sample in samples))
-    xyzph = torch.zeros((len(samples), max_emitters, 4), dtype=torch.float32)
-    mask = torch.zeros((len(samples), max_emitters), dtype=torch.bool)
-    for batch_idx, sample in enumerate(samples):
-        count = int(sample.emitter_count)
-        if count <= 0:
-            continue
-        xyzph[batch_idx, :count, 0:2] = sample.xy_px
-        xyzph[batch_idx, :count, 2] = sample.z_nm
-        xyzph[batch_idx, :count, 3] = sample.photons
-        mask[batch_idx, :count] = True
+    with profiling.time_block("posterior_samples_context_raw_stack"):
+        raw_frames = torch.stack(
+            [_record_observed_frame(records_by_id[int(sample.roi_id)], frame_index=int(sample.frame_index)) for sample in samples],
+            dim=0,
+        )
+    with profiling.time_block("posterior_samples_context_background_stack"):
+        background = torch.stack(
+            [
+                (
+                    torch.as_tensor(sample.background_smoothed, dtype=torch.float32)
+                    if sample.background_smoothed is not None
+                    else torch.as_tensor(records_by_id[int(sample.roi_id)].background_smoothed, dtype=torch.float32)
+                )
+                for sample in samples
+            ],
+            dim=0,
+        )
+    with profiling.time_block("posterior_samples_context_xyzph_pack"):
+        max_emitters = max(1, max(int(sample.emitter_count) for sample in samples))
+        xyzph = torch.zeros((len(samples), max_emitters, 4), dtype=torch.float32)
+        mask = torch.zeros((len(samples), max_emitters), dtype=torch.bool)
+        for batch_idx, sample in enumerate(samples):
+            count = int(sample.emitter_count)
+            if count <= 0:
+                continue
+            xyzph[batch_idx, :count, 0:2] = sample.xy_px
+            xyzph[batch_idx, :count, 2] = sample.z_nm
+            xyzph[batch_idx, :count, 3] = sample.photons
+            mask[batch_idx, :count] = True
     detection_samples = DetectionPosteriorSamples(
         xyzph=xyzph,
         mask=mask,
@@ -1485,14 +1680,18 @@ def _sampled_emitter_sets_to_context(
             "source": "roi_record_posterior_samples",
             "log_q_h_given_x": [sample.log_q_h_given_x for sample in samples],
             "posterior_group_id": [int(sample.metrics.get("posterior_group_id", 0)) for sample in samples],
+            "roi_id": [int(sample.roi_id) for sample in samples],
+            "frame_index": [int(sample.frame_index) for sample in samples],
         },
     )
-    origins = torch.as_tensor(
-        [records_by_id[int(sample.roi_id)].roi_origin_xy_px for sample in samples],
-        dtype=torch.float32,
-    )
-    domain_names = [str(sample.domain_name) for sample in samples]
-    selected_records = tuple({records_by_id[int(sample.roi_id)].roi_id: records_by_id[int(sample.roi_id)] for sample in samples}.values())
+    with profiling.time_block("posterior_samples_context_metadata"):
+        origins = torch.as_tensor(
+            [records_by_id[int(sample.roi_id)].roi_origin_xy_px for sample in samples],
+            dtype=torch.float32,
+        )
+        domain_names = [str(sample.domain_name) for sample in samples]
+        loss_mask = _stack_record_loss_masks([records_by_id[int(sample.roi_id)] for sample in samples])
+        selected_records = tuple({records_by_id[int(sample.roi_id)].roi_id: records_by_id[int(sample.roi_id)] for sample in samples}.values())
     return _ROIProjectionUpdateContext(
         bank=ROIBank(
             records=selected_records,
@@ -1507,6 +1706,7 @@ def _sampled_emitter_sets_to_context(
         samples=detection_samples,
         roi_origin_xy_px=origins,
         domain_names=domain_names,
+        loss_mask=loss_mask,
     )
 
 
@@ -1537,6 +1737,38 @@ def _inner_xy_mask(xy_px: torch.Tensor, *, roi_size_px: int, over_cut_px: int) -
     if roi <= 2 * over:
         raise ValueError("roi_size_px must be larger than 2 * over_cut_px")
     return (xy_px[:, 0] >= float(over)) & (xy_px[:, 0] < float(roi - over)) & (xy_px[:, 1] >= float(over)) & (xy_px[:, 1] < float(roi - over))
+
+
+def _stack_record_loss_masks(records: Sequence[ROIRecord]) -> torch.Tensor | None:
+    masks = [_record_loss_mask(record) for record in records]
+    if not masks or all(mask is None for mask in masks):
+        return None
+    concrete_masks = []
+    for record, mask in zip(records, masks, strict=True):
+        if mask is None:
+            shape = tuple(int(v) for v in np.asarray(record.background_smoothed).shape)
+            concrete_masks.append(torch.ones(shape, dtype=torch.bool))
+        else:
+            concrete_masks.append(mask)
+    return torch.stack(concrete_masks, dim=0)
+
+
+def _record_loss_mask(record: ROIRecord) -> torch.Tensor | None:
+    summary = dict(record.summary or {})
+    if "valid_core_size_px" not in summary or "valid_core_offset_xy_px" not in summary:
+        return None
+    height, width = (int(v) for v in np.asarray(record.background_smoothed).shape)
+    core = int(summary["valid_core_size_px"])
+    offset = summary["valid_core_offset_xy_px"]
+    x0 = int(round(float(offset[0])))
+    y0 = int(round(float(offset[1])))
+    if core <= 0:
+        raise ValueError("valid_core_size_px must be positive")
+    if x0 < 0 or y0 < 0 or x0 + core > width or y0 + core > height:
+        raise ValueError(f"valid core {(x0, y0, core)} exceeds ROI bounds {(width, height)} for roi_id={record.roi_id}")
+    mask = torch.zeros((height, width), dtype=torch.bool)
+    mask[y0 : y0 + core, x0 : x0 + core] = True
+    return mask
 
 
 def _z_range_nm_from_gamma_cfg(gamma_cfg: Mapping[str, Any]) -> tuple[float, float] | None:
@@ -1632,7 +1864,7 @@ def _build_roi_projection_objective(
 
     def prepare_fn(result: TrainingRunEpochResult | TrainingStepResult) -> dict[str, object]:
         if objective_mode == "importance_wake":
-            context, sampling_metrics = _sample_roi_bank_posterior_update_from_current_model(
+            context, sampling_metrics = _sample_roi_bank_importance_update_context(
                 bank,
                 gamma_cfg,
                 model=model,
@@ -1642,7 +1874,7 @@ def _build_roi_projection_objective(
             update_context["active"] = context
         else:
             selected_bank, sampling_metrics = _select_roi_bank_update_subset(bank, gamma_cfg, epoch=int(result.epoch))
-            raw_frames, background, samples, roi_origin_xy_px, domain_names = _record_projection_tensors(selected_bank)
+            raw_frames, background, samples, roi_origin_xy_px, domain_names, loss_mask = _record_projection_tensors(selected_bank)
             update_context["active"] = _ROIProjectionUpdateContext(
                 bank=selected_bank,
                 sampling_metrics=sampling_metrics,
@@ -1651,6 +1883,7 @@ def _build_roi_projection_objective(
                 samples=samples,
                 roi_origin_xy_px=roi_origin_xy_px,
                 domain_names=domain_names,
+                loss_mask=loss_mask,
             )
         return sampling_metrics
 
@@ -1658,7 +1891,7 @@ def _build_roi_projection_objective(
         context = update_context.get("active")
         if context is None:
             if objective_mode == "importance_wake":
-                context, _sampling_metrics = _sample_roi_bank_posterior_update_from_current_model(
+                context, _sampling_metrics = _sample_roi_bank_importance_update_context(
                     bank,
                     gamma_cfg,
                     model=model,
@@ -1667,7 +1900,7 @@ def _build_roi_projection_objective(
                 )
             else:
                 selected_bank, sampling_metrics = _select_roi_bank_update_subset(bank, gamma_cfg, epoch=0)
-                raw_frames, background, samples, roi_origin_xy_px, domain_names = _record_projection_tensors(selected_bank)
+                raw_frames, background, samples, roi_origin_xy_px, domain_names, loss_mask = _record_projection_tensors(selected_bank)
                 context = _ROIProjectionUpdateContext(
                     bank=selected_bank,
                     sampling_metrics=sampling_metrics,
@@ -1676,6 +1909,7 @@ def _build_roi_projection_objective(
                     samples=samples,
                     roi_origin_xy_px=roi_origin_xy_px,
                     domain_names=domain_names,
+                    loss_mask=loss_mask,
                 )
             update_context["active"] = context
         return context
@@ -1689,6 +1923,7 @@ def _build_roi_projection_objective(
             background=context.background,
             roi_origin_xy_px=context.roi_origin_xy_px,
             domain_names=context.domain_names,
+            loss_mask=context.loss_mask,
         )
 
     def metrics_fn(
@@ -1712,6 +1947,8 @@ def _build_roi_projection_objective(
             "selected_roi_count": len(context.bank.records),
             "posterior_max_emitters": max_emitters,
             "over_cut_px": over_cut,
+            "loss_mask_mode": "valid_core" if context.loss_mask is not None else "over_cut",
+            "loss_mask_pixel_count": 0 if context.loss_mask is None else int(context.loss_mask.sum().item()),
             "posterior_active_emitters": selected_sampled_emitters,
             "best_step": selected_step,
             "selected_step": selected_step,
@@ -1729,6 +1966,8 @@ def _build_roi_projection_objective(
                 objective=objective,
                 gamma_before=gamma_before,
                 gamma_after=gamma,
+                unavailable_mode=heldout_mode,
+                unavailable_split_source=heldout_split_source,
             ),
             "checkpoint_path": None,
             "report_path": None,
@@ -1755,7 +1994,7 @@ def _build_roi_projection_objective(
     return objective_fn, metrics_fn, prepare_fn
 
 
-def _record_projection_tensors(bank: ROIBank) -> tuple[torch.Tensor, torch.Tensor, DetectionPosteriorSamples, torch.Tensor, list[str]]:
+def _record_projection_tensors(bank: ROIBank) -> tuple[torch.Tensor, torch.Tensor, DetectionPosteriorSamples, torch.Tensor, list[str], torch.Tensor | None]:
     records = tuple(bank.records)
     if not records:
         raise ValueError("ROI projection requires at least one ROI record")
@@ -1792,11 +2031,16 @@ def _record_projection_tensors(bank: ROIBank) -> tuple[torch.Tensor, torch.Tenso
         xyzph=xyzph,
         mask=mask,
         logits=torch.zeros(raw_frames.shape, dtype=torch.float32),
-        metadata={"source": "roi_record_emitters"},
+        metadata={
+            "source": "roi_record_emitters",
+            "roi_id": [int(record.roi_id) for record, _, _ in sample_rows],
+            "frame_index": [int(frame_index) for _, frame_index, _ in sample_rows],
+        },
     )
     origins = torch.as_tensor([record.roi_origin_xy_px for record, _, _ in sample_rows], dtype=torch.float32)
     domain_names = [str(record.domain_name) for record, _, _ in sample_rows]
-    return raw_frames, background, samples, origins, domain_names
+    loss_mask = _stack_record_loss_masks([record for record, _, _ in sample_rows])
+    return raw_frames, background, samples, origins, domain_names, loss_mask
 
 
 def _record_observed_center_frame(record: ROIRecord) -> torch.Tensor:
@@ -1844,7 +2088,8 @@ def _write_gamma_monitor_report(
     )
     summary_path = report_dir / "gamma_alternation_summary.json"
     report_path = report_dir / "gamma_update_monitor.md"
-    png_path = report_dir / "raw_vs_recon.png"
+    raw_tiff_png_path = report_dir / "raw_tiff_adu_vs_recon.png"
+    observed_png_path = report_dir / "observed_photons_vs_recon.png"
     diagnostics_manifest_path = report_dir / "diagnostics" / "diagnostics_manifest.json"
     resolved_checkpoint_path = result.checkpoint_path
     if resolved_checkpoint_path is None:
@@ -1858,13 +2103,29 @@ def _write_gamma_monitor_report(
         roi_origin_xy_px=roi_origin_xy_px,
         domain_names=domain_names,
     )
+    raw_tiff_frame = _raw_tiff_adu_frame_for_diagnostic(
+        metrics,
+        samples=samples,
+        roi_origin_xy_px=roi_origin_xy_px,
+        domain_names=domain_names,
+        fallback_shape=raw_frames[0].shape,
+    )
+    diagnostic_path = raw_tiff_png_path if raw_tiff_frame is not None else observed_png_path
+    diagnostic_units = "raw_tiff_adu" if raw_tiff_frame is not None else "camera_corrected_photons"
+    diagnostic_frame = raw_tiff_frame if raw_tiff_frame is not None else raw_frames[0]
     _write_raw_vs_reconstruction_png(
-        png_path,
-        raw_frame=raw_frames[0],
+        diagnostic_path,
+        raw_frame=diagnostic_frame,
         reconstruction=reconstruction,
     )
+    if raw_tiff_frame is not None:
+        _write_raw_vs_reconstruction_png(
+            observed_png_path,
+            raw_frame=raw_frames[0],
+            reconstruction=reconstruction,
+        )
     payload = dict(metrics)
-    diagnostic_rel = str(png_path.relative_to(layout.run_dir))
+    diagnostic_rel = str(diagnostic_path.relative_to(layout.run_dir))
     diagnostics_manifest_rel = str(diagnostics_manifest_path.relative_to(layout.run_dir))
     payload.update(
         {
@@ -1872,6 +2133,7 @@ def _write_gamma_monitor_report(
             "steps_completed": int(metrics["steps"]) if "steps" in metrics else None,
             "checkpoint_path": checkpoint_path,
             "diagnostic_png_path": diagnostic_rel,
+            "diagnostic_observed_units": diagnostic_units,
             "diagnostics_manifest_path": diagnostics_manifest_rel,
         }
     )
@@ -1880,8 +2142,11 @@ def _write_gamma_monitor_report(
         payload,
         summary_path=summary_path,
         report_path=report_path,
-        raw_vs_recon_path=png_path,
-        raw_frame=raw_frames[0],
+        raw_tiff_vs_recon_path=raw_tiff_png_path if raw_tiff_frame is not None else None,
+        observed_vs_recon_path=observed_png_path,
+        raw_frame=diagnostic_frame,
+        observed_photons_frame=raw_frames[0],
+        observed_photons_frames=raw_frames,
         reconstruction=reconstruction,
         gamma_before=gamma_before,
         gamma=gamma,
@@ -1900,6 +2165,7 @@ def _write_gamma_monitor_report(
         "report_path": str(report_path.relative_to(layout.run_dir)),
         "checkpoint_path": checkpoint_path,
         "diagnostic_png_path": diagnostic_rel,
+        "diagnostic_observed_units": diagnostic_units,
         "diagnostics_manifest_path": diagnostics_manifest_rel,
     }
 
@@ -1932,8 +2198,11 @@ def _write_diagnostics_manifest(
     *,
     summary_path: Path,
     report_path: Path,
-    raw_vs_recon_path: Path,
+    raw_tiff_vs_recon_path: Path | None,
+    observed_vs_recon_path: Path,
     raw_frame: torch.Tensor,
+    observed_photons_frame: torch.Tensor,
+    observed_photons_frames: torch.Tensor | None = None,
     reconstruction: torch.Tensor,
     gamma_before: torch.Tensor | None = None,
     gamma: torch.Tensor,
@@ -1958,7 +2227,7 @@ def _write_diagnostics_manifest(
     fixed_roi = _write_fixed_roi_recon_smoke(
         diagnostics_dir / "fixed_roi_recon",
         payload=payload,
-        raw_frame=raw_frame,
+        raw_frame=observed_photons_frame,
         reconstruction=reconstruction,
         layout=layout,
     )
@@ -1966,6 +2235,27 @@ def _write_diagnostics_manifest(
         diagnostics_dir / "raw_tiff_patch_recon",
         payload=payload,
         raw_frame=raw_frame,
+        reconstruction=reconstruction,
+        layout=layout,
+    )
+    raw_patch_montage = None
+    if samples is not None and background is not None:
+        raw_patch_montage = _write_raw_tiff_patch_recon_montage(
+            diagnostics_dir / "raw_tiff_patch_recon_montage",
+            payload=payload,
+            samples=samples,
+            background=background,
+            gamma=gamma,
+            objective=objective,
+            roi_origin_xy_px=roi_origin_xy_px,
+            domain_names=domain_names,
+            observed_photons_frames=observed_photons_frames,
+            layout=layout,
+        )
+    observed_patch = _write_observed_photons_patch_recon_smoke(
+        diagnostics_dir / "observed_photons_patch_recon",
+        payload=payload,
+        observed_frame=observed_photons_frame,
         reconstruction=reconstruction,
         layout=layout,
     )
@@ -2006,19 +2296,92 @@ def _write_diagnostics_manifest(
                 "summary_path": rel(summary_path),
                 "report_path": rel(report_path),
             },
-            "raw_vs_recon_smoke": {
+            **(
+                {
+                    "raw_tiff_adu_vs_recon": {
+                        "status": "available",
+                        "png_path": rel(raw_tiff_vs_recon_path),
+                    }
+                }
+                if raw_tiff_vs_recon_path is not None
+                else {}
+            ),
+            "observed_photons_vs_recon": {
                 "status": "available",
-                "png_path": rel(raw_vs_recon_path),
+                "png_path": rel(observed_vs_recon_path),
             },
             "zmap_before_after": zmap,
             "fixed_roi_recon": fixed_roi,
             "raw_tiff_patch_recon": raw_patch,
+            **({"raw_tiff_patch_recon_montage": raw_patch_montage} if raw_patch_montage is not None else {}),
+            "observed_photons_patch_recon": observed_patch,
             **({"raw_initial_latest_triplet": model_triplet} if model_triplet is not None else {}),
             "psf_shape_grid": psf_grid,
         },
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _raw_tiff_adu_frame_for_diagnostic(
+    payload: Mapping[str, object],
+    *,
+    samples: DetectionPosteriorSamples,
+    roi_origin_xy_px: torch.Tensor | None,
+    domain_names: list[str] | tuple[str, ...] | None,
+    fallback_shape: torch.Size | tuple[int, ...],
+    batch_index: int = 0,
+) -> torch.Tensor | None:
+    raw_path = payload.get("roi_bank_raw_path")
+    if raw_path is None:
+        return None
+    frame_indices = samples.metadata.get("frame_index") if isinstance(samples.metadata, Mapping) else None
+    if not isinstance(frame_indices, (list, tuple)) or not frame_indices:
+        return None
+    if roi_origin_xy_px is None or int(roi_origin_xy_px.numel()) < 2:
+        return None
+    shape = tuple(int(v) for v in fallback_shape)
+    if len(shape) != 2:
+        return None
+    height, width = shape
+    try:
+        sample_index = int(batch_index)
+        if sample_index < 0 or sample_index >= len(frame_indices):
+            return None
+        frame_index = int(frame_indices[sample_index])
+        origin = roi_origin_xy_px.detach().cpu().to(dtype=torch.float32)
+        if origin.ndim == 2:
+            if sample_index >= int(origin.shape[0]):
+                return None
+            x0 = int(round(float(origin[sample_index, 0].item())))
+            y0 = int(round(float(origin[sample_index, 1].item())))
+        else:
+            x0 = int(round(float(origin[0].item())))
+            y0 = int(round(float(origin[1].item())))
+        domain = str(domain_names[sample_index]).strip().lower() if domain_names and sample_index < len(domain_names) else ""
+        with tifffile.TiffFile(str(raw_path)) as tif:
+            frame = np.asarray(tif.series[0].asarray(key=frame_index), dtype=np.float32)
+        if frame.ndim != 2:
+            frame = np.squeeze(frame)
+        if frame.ndim != 2:
+            return None
+        x_offset = _diagnostic_domain_x_offset(domain, frame_width=int(frame.shape[1]), x0=x0, crop_width=width)
+        crop = frame[y0 : y0 + height, x_offset + x0 : x_offset + x0 + width]
+        if crop.shape != (height, width):
+            return None
+        return torch.as_tensor(np.ascontiguousarray(crop), dtype=torch.float32)
+    except Exception:
+        return None
+
+
+def _diagnostic_domain_x_offset(domain: str, *, frame_width: int, x0: int, crop_width: int) -> int:
+    if domain in {"right", "r", "domain_right"}:
+        half_width = int(frame_width) // 2
+        if int(x0) >= half_width:
+            return 0
+        if int(x0) + int(crop_width) <= half_width:
+            return half_width
+    return 0
 
 
 def _write_zmap_delta_summary(
@@ -2103,9 +2466,158 @@ def _write_raw_tiff_patch_recon_smoke(
         "schema_version": "roi_gamma_raw_tiff_patch_recon_smoke.v1",
         "epoch": int(payload.get("epoch", 0)),
         "selected_patch_count": 1,
-        "poisson_nll": _poisson_nll_value(raw_frame, reconstruction),
-        "mse": float(residual.square().mean().item()),
+        "observed_units": "raw_tiff_adu",
+        "note": "Raw TIFF ADU and reconstruction are not in the same physical units; this diagnostic is visual only.",
         "ncc": _ncc_value(raw_frame, reconstruction),
+        "png_path": str(png_path.relative_to(layout.run_dir)),
+    }
+    path.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"status": "available", "summary_path": str(summary_path.relative_to(layout.run_dir)), "png_path": str(png_path.relative_to(layout.run_dir))}
+
+
+def _write_raw_tiff_patch_recon_montage(
+    path: Path,
+    *,
+    payload: Mapping[str, object],
+    samples: DetectionPosteriorSamples,
+    background: torch.Tensor,
+    gamma: torch.Tensor,
+    objective: GammaProjectionObjective,
+    roi_origin_xy_px: torch.Tensor | None,
+    domain_names: list[str] | tuple[str, ...] | None,
+    observed_photons_frames: torch.Tensor | None,
+    layout,
+) -> dict[str, object] | None:
+    batch_count = int(samples.xyzph.shape[0])
+    if batch_count <= 0:
+        return None
+    requested = int(payload.get("diagnostic_raw_tiff_patch_recon_montage_count", 5) or 5)
+    rendered_count = max(1, min(requested, batch_count))
+    if rendered_count == 1:
+        indices = [0]
+    else:
+        indices = sorted({int(round(v)) for v in np.linspace(0, batch_count - 1, num=rendered_count)})
+
+    rows: list[np.ndarray] = []
+    rendered_indices: list[int] = []
+    ncc_values: list[float] = []
+    roi_ids: list[object] = []
+    frame_indices: list[object] = []
+    for index in indices:
+        bkg = torch.as_tensor(background, dtype=torch.float32)
+        frame_shape = tuple(int(v) for v in bkg[index].shape[-2:]) if bkg.ndim == 3 else tuple(int(v) for v in bkg.shape[-2:])
+        raw_frame = _raw_tiff_adu_frame_for_diagnostic(
+            payload,
+            samples=samples,
+            roi_origin_xy_px=roi_origin_xy_px,
+            domain_names=domain_names,
+            fallback_shape=frame_shape,
+            batch_index=index,
+        )
+        if raw_frame is None:
+            continue
+        reconstruction = objective.render_reconstruction(
+            background=background[index] if torch.as_tensor(background).ndim == 3 else background,
+            samples=samples,
+            batch_index=index,
+            gamma=gamma,
+            roi_origin_xy_px=roi_origin_xy_px,
+            domain_names=domain_names,
+        )
+        corrected = None
+        if observed_photons_frames is not None:
+            observed_all = torch.as_tensor(observed_photons_frames, dtype=torch.float32)
+            if observed_all.ndim == 3 and index < int(observed_all.shape[0]):
+                corrected = observed_all[index]
+        if corrected is None:
+            corrected = raw_frame
+        residual = raw_frame.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
+        rows.append(_tile_frames_uint8([raw_frame, corrected, reconstruction, residual.abs()]))
+        rendered_indices.append(index)
+        ncc_values.append(_ncc_value(raw_frame, reconstruction))
+        roi_ids.append(_metadata_item(samples.metadata.get("roi_id") if isinstance(samples.metadata, Mapping) else None, index))
+        frame_indices.append(_metadata_item(samples.metadata.get("frame_index") if isinstance(samples.metadata, Mapping) else None, index))
+
+    if not rows:
+        return None
+    spacer = np.full((4, int(rows[0].shape[1])), 255, dtype=np.uint8)
+    canvas_parts: list[np.ndarray] = []
+    for row_index, row in enumerate(rows):
+        if row_index:
+            canvas_parts.append(spacer)
+        canvas_parts.append(row)
+    canvas = np.concatenate(canvas_parts, axis=0)
+    png_path = path / "raw_tiff_patch_recon_montage.png"
+    summary_path = path / "raw_tiff_patch_recon_montage_summary.json"
+    _write_grayscale_png(png_path, canvas)
+    summary = {
+        "schema_version": "roi_gamma_raw_tiff_patch_recon_montage.v1",
+        "epoch": int(payload.get("epoch", 0)),
+        "selected_patch_count": int(len(rendered_indices)),
+        "observed_units": "raw_tiff_adu",
+        "note": "Each row is raw TIFF ADU | corrected camera photon | reconstruction | absolute residual. Raw TIFF ADU and reconstruction are not in the same physical units; this diagnostic is visual only.",
+        "batch_indices": rendered_indices,
+        "roi_ids": roi_ids,
+        "frame_indices": frame_indices,
+        "ncc": ncc_values,
+        "panels": ["raw_tiff_adu", "corrected_camera_photon", "reconstruction", "absolute_residual"],
+        "png_path": str(png_path.relative_to(layout.run_dir)),
+    }
+    path.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"status": "available", "summary_path": str(summary_path.relative_to(layout.run_dir)), "png_path": str(png_path.relative_to(layout.run_dir))}
+
+
+def _metadata_item(value: object, index: int) -> object:
+    if isinstance(value, torch.Tensor):
+        if index < int(value.numel()):
+            item = value.reshape(-1)[index].item()
+            if isinstance(item, (bool, np.bool_)):
+                return bool(item)
+            if isinstance(item, (int, np.integer)):
+                return int(item)
+            if isinstance(item, (float, np.floating)):
+                return int(item) if float(item).is_integer() else float(item)
+            return item
+        return None
+    if isinstance(value, np.ndarray):
+        flat = value.reshape(-1)
+        if index < int(flat.size):
+            item = flat[index].item()
+            if isinstance(item, (bool, np.bool_)):
+                return bool(item)
+            if isinstance(item, (int, np.integer)):
+                return int(item)
+            if isinstance(item, (float, np.floating)):
+                return int(item) if float(item).is_integer() else float(item)
+            return item
+        return None
+    if isinstance(value, (list, tuple)):
+        return value[index] if index < len(value) else None
+    return None
+
+
+def _write_observed_photons_patch_recon_smoke(
+    path: Path,
+    *,
+    payload: Mapping[str, object],
+    observed_frame: torch.Tensor,
+    reconstruction: torch.Tensor,
+    layout,
+) -> dict[str, object]:
+    residual = observed_frame.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
+    png_path = path / "observed_photons_patch_recon_smoke.png"
+    summary_path = path / "observed_photons_patch_recon_summary.json"
+    _write_grayscale_png(png_path, _tile_frames_uint8([observed_frame, reconstruction, residual.abs()]))
+    summary = {
+        "schema_version": "roi_gamma_observed_photons_patch_recon_smoke.v1",
+        "epoch": int(payload.get("epoch", 0)),
+        "selected_patch_count": 1,
+        "observed_units": "camera_corrected_photons",
+        "poisson_nll": _poisson_nll_value(observed_frame, reconstruction),
+        "mse": float(residual.square().mean().item()),
+        "ncc": _ncc_value(observed_frame, reconstruction),
         "png_path": str(png_path.relative_to(layout.run_dir)),
     }
     path.mkdir(parents=True, exist_ok=True)
@@ -2310,6 +2822,17 @@ def _auto_build_roi_bank(
         ),
         camera_backward=camera_backward,
         over_cut_px=int(gamma_cfg.get("roi_bank_over_cut_px", gamma_cfg.get("over_cut_px", 0))),
+        origin_mode=str(gamma_cfg.get("roi_bank_origin_mode", gamma_cfg.get("origin_mode", "emitter_centered"))),
+        origin_stride_px=(
+            None
+            if gamma_cfg.get("roi_bank_origin_stride_px", gamma_cfg.get("origin_stride_px")) is None
+            else int(gamma_cfg.get("roi_bank_origin_stride_px", gamma_cfg.get("origin_stride_px")))
+        ),
+        valid_core_size_px=(
+            None
+            if gamma_cfg.get("roi_bank_valid_core_size_px", gamma_cfg.get("valid_core_size_px")) is None
+            else int(gamma_cfg.get("roi_bank_valid_core_size_px", gamma_cfg.get("valid_core_size_px")))
+        ),
     )
     if _uses_model_infer(roi_source):
         return _auto_build_roi_bank_from_loc_harvest(
@@ -2341,7 +2864,7 @@ def _auto_build_roi_bank(
             "roi_bank_candidate_mode": roi_source.candidate_mode,
             "roi_bank_infer_source": "bright_pixel",
             "roi_bank_observed_units": "camera_corrected_photons" if camera_backward is not None else "raw_input",
-            **({"camera_backward": camera_backward} if camera_backward is not None else {}),
+            **_roi_bank_camera_backward_metadata(bank.metadata, camera_backward),
         },
         empty_grid_cell_ids=bank.empty_grid_cell_ids,
         format_version=bank.format_version,
@@ -2402,22 +2925,42 @@ def _auto_build_roi_bank_from_loc_harvest(
             "roi_bank_infer_source": "loc_harvest_raw_tiff",
             "roi_bank_harvest_channel_order": "p,photons,x,y,z,photons_sigma,x_sigma,y_sigma,z_sigma,bg",
             "roi_bank_observed_units": "camera_corrected_photons" if config.camera_backward is not None else "raw_input",
-            **({"camera_backward": config.camera_backward} if config.camera_backward is not None else {}),
+            **_roi_bank_camera_backward_metadata(bank.metadata, config.camera_backward),
         },
         empty_grid_cell_ids=bank.empty_grid_cell_ids,
         format_version=bank.format_version,
     )
 
 
-def _camera_backward_from_training_config(train_cfg: Mapping[str, Any]) -> dict[str, float] | None:
+def _roi_bank_camera_backward_metadata(
+    bank_metadata: Mapping[str, Any],
+    configured: Mapping[str, Any] | None,
+) -> dict[str, object]:
+    if not configured:
+        return {}
+    resolved = bank_metadata.get("camera_backward") if isinstance(bank_metadata, Mapping) else None
+    return {"camera_backward": resolved if isinstance(resolved, Mapping) else dict(configured)}
+
+
+def _camera_backward_from_training_config(train_cfg: Mapping[str, Any]) -> dict[str, Any] | None:
     camera_cfg = train_cfg.get("camera") if isinstance(train_cfg.get("camera"), Mapping) else {}
     normalization = train_cfg.get("normalization") if isinstance(train_cfg.get("normalization"), Mapping) else {}
-    params: dict[str, float] = {}
+    params: dict[str, Any] = {}
     for key in ("qe", "e_per_adu", "em_gain", "spurious_charge"):
         if key in camera_cfg:
             params[key] = float(camera_cfg[key])
         elif key in normalization:
             params[key] = float(normalization[key])
+    if str(camera_cfg.get("baseline_mode", "")).strip():
+        params["baseline_mode"] = str(camera_cfg["baseline_mode"])
+        if "baseline_percentile" in camera_cfg:
+            params["baseline_percentile"] = float(camera_cfg["baseline_percentile"])
+        if "baseline_frame_range" in camera_cfg:
+            frame_range = camera_cfg["baseline_frame_range"]
+            if isinstance(frame_range, (list, tuple)) and len(frame_range) == 2:
+                params["baseline_frame_range"] = [int(frame_range[0]), int(frame_range[1])]
+        if "baseline_by_domain" in camera_cfg and isinstance(camera_cfg["baseline_by_domain"], Mapping):
+            params["baseline_by_domain"] = {str(key): float(value) for key, value in camera_cfg["baseline_by_domain"].items()}
     if "baseline" in camera_cfg:
         params["baseline"] = float(camera_cfg["baseline"])
     elif "baseline_adu" in camera_cfg:
@@ -2428,13 +2971,17 @@ def _camera_backward_from_training_config(train_cfg: Mapping[str, Any]) -> dict[
         params["baseline"] = float(normalization["baseline_adu"])
     if not params:
         return None
-    return {
+    resolved = {
         "baseline": float(params.get("baseline", 0.0)),
         "e_per_adu": float(params.get("e_per_adu", 1.0)),
         "em_gain": float(params.get("em_gain", 1.0)),
         "qe": float(params.get("qe", 1.0)),
         "spurious_charge": float(params.get("spurious_charge", 0.0)),
     }
+    for key in ("baseline_mode", "baseline_percentile", "baseline_frame_range", "baseline_by_domain"):
+        if key in params:
+            resolved[key] = params[key]
+    return resolved
 
 
 def _roi_conditioning_context(train_cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -2879,6 +3426,8 @@ def _resolve_roi_gamma_banks(
         return bank, load_roi_bank(str(gamma_cfg["heldout_roi_library_path"])), "fixed_samples", "configured_hdf5"
     heldout_count = _auto_heldout_count(gamma_cfg, total_count=len(bank.records))
     if heldout_count <= 0:
+        if _auto_heldout_requested(gamma_cfg):
+            return bank, None, "disabled_insufficient_records", "auto_from_roi_library_insufficient_records"
         return bank, None, "not_configured", None
     records_by_domain: dict[str, list[ROIRecord]] = {}
     for record in bank.records:
@@ -2900,6 +3449,8 @@ def _resolve_roi_gamma_banks(
             heldout_records.extend(domain_records[split_at:])
     if not selected_records:
         raise ValueError("auto held-out split must leave at least one selected ROI")
+    if not heldout_records:
+        return bank, None, "disabled_insufficient_records", "auto_from_roi_library_insufficient_records"
     selected_bank = ROIBank(
         records=selected_records,
         config=bank.config,
@@ -2917,15 +3468,16 @@ def _resolve_roi_gamma_banks(
     return selected_bank, heldout_bank, "auto_split_fixed_samples", "auto_from_roi_library"
 
 
+def _auto_heldout_requested(gamma_cfg: Mapping[str, Any]) -> bool:
+    return int(gamma_cfg.get("auto_heldout_min_rois", 0)) > 0 or int(gamma_cfg.get("auto_heldout_max_rois", 0)) > 0
+
+
 def _auto_heldout_count(gamma_cfg: Mapping[str, Any], *, total_count: int) -> int:
     min_rois = int(gamma_cfg.get("auto_heldout_min_rois", 0))
     max_rois = int(gamma_cfg.get("auto_heldout_max_rois", min_rois))
     if min_rois <= 0 and max_rois <= 0:
         return 0
-    count = min(max(min_rois, 0), max(max_rois, 0), max(int(total_count) - 1, 0))
-    if count < min_rois:
-        raise ValueError("auto held-out split requires enough ROI records")
-    return count
+    return min(max(min_rois, 0), max(max_rois, 0), max(int(total_count) - 1, 0))
 
 
 def _build_heldout_monitor_context(
@@ -2967,6 +3519,7 @@ def _build_heldout_monitor_context(
             samples=context.samples,
             roi_origin_xy_px=context.roi_origin_xy_px,
             domain_names=context.domain_names,
+            loss_mask=context.loss_mask,
         )
     roi_conditioning = _roi_conditioning_context(train_cfg)
     loc_batch = build_roi_batch_provider(
@@ -3001,6 +3554,7 @@ def _build_heldout_monitor_context(
         samples=samples,
         roi_origin_xy_px=torch.as_tensor(loc_batch.metadata["roi_origin_xy_px"], dtype=torch.float32),
         domain_names=list(loc_batch.metadata["domain_names"]),
+        loss_mask=_stack_record_loss_masks(bank.records),
     )
 
 
@@ -3010,14 +3564,17 @@ def _heldout_monitor_metrics(
     objective: GammaProjectionObjective,
     gamma_before: torch.Tensor,
     gamma_after: torch.Tensor,
+    unavailable_mode: str = "not_configured",
+    unavailable_split_source: str | None = None,
 ) -> dict[str, object]:
     if context is None:
         return {
             "heldout_available": False,
-            "heldout_monitor_mode": "not_configured",
+            "heldout_monitor_mode": unavailable_mode,
             "heldout_roi_count": 0,
             "heldout_sample_count": 0,
             "heldout_sampled_emitter_count": 0,
+            "heldout_split_source": unavailable_split_source,
             "heldout_initial_loss": None,
             "heldout_final_loss": None,
             "heldout_loss_delta": None,
@@ -3032,6 +3589,7 @@ def _heldout_monitor_metrics(
         background=context.background,
         roi_origin_xy_px=context.roi_origin_xy_px,
         domain_names=context.domain_names,
+        loss_mask=context.loss_mask,
     ).detach()
     final_loss = objective(
         gamma=gamma_after,
@@ -3040,6 +3598,7 @@ def _heldout_monitor_metrics(
         background=context.background,
         roi_origin_xy_px=context.roi_origin_xy_px,
         domain_names=context.domain_names,
+        loss_mask=context.loss_mask,
     ).detach()
     initial_value = float(initial_loss.item())
     final_value = float(final_loss.item())

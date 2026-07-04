@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import itertools
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Callable, Iterable
 
 import torch
 
+from neptune_v03.runtime import profiling
 from neptune_v03.runtime.layout import RunLayout
 
 
@@ -105,10 +107,6 @@ def train_one_epoch(
     on_batch_end: BatchEndHook | None = None,
     loss_fn: LossFn | None = None,
 ) -> TrainingEpochResult:
-    batch_list = list(batches)
-    if not batch_list:
-        raise ValueError("train_one_epoch requires at least one batch")
-
     model.train()
     compute_loss = loss_fn or _default_mse_loss
     metrics_path = layout.metrics_dir / config.metrics_name
@@ -120,8 +118,17 @@ def train_one_epoch(
         scaler = torch.amp.GradScaler(device="cuda", enabled=True)
     scaler_enabled = bool(scaler is not None and scaler.is_enabled())
 
-    losses: list[float] = []
-    for step, batch in enumerate(batch_list, start=1):
+    loss_sum = 0.0
+    step_count = 0
+    batch_iter = iter(batches)
+    step = 0
+    while True:
+        with profiling.time_block("online_simulation_total"):
+            try:
+                batch = next(batch_iter)
+            except StopIteration:
+                break
+        step += 1
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast(device_type="cuda", dtype=config.amp_dtype, enabled=autocast_enabled):
             loss = compute_loss(model, batch)
@@ -142,19 +149,18 @@ def train_one_epoch(
             scheduler.step()
 
         loss_value = float(loss.detach().cpu().item())
-        losses.append(loss_value)
+        loss_sum += loss_value
+        step_count = int(step)
         metric_row: dict[str, object] = {
             "epoch": config.epoch,
             "step": step,
             "global_step": config.global_step_start + step,
             "loss": loss_value,
         }
-        extra_metrics = getattr(compute_loss, "last_metrics", None)
-        if isinstance(extra_metrics, Mapping):
-            metric_row.update(dict(extra_metrics))
+        metric_row.update(profiling.drain())
         _append_jsonl(
             metrics_path,
-            metric_row,
+            _training_core_metrics_row(metric_row),
         )
         if on_batch_end is not None:
             on_batch_end(
@@ -168,6 +174,8 @@ def train_one_epoch(
             )
 
     checkpoint_path = layout.checkpoints_dir / config.checkpoint_name
+    if step_count <= 0:
+        raise ValueError("train_one_epoch requires at least one batch")
     _save_checkpoint(
         path=checkpoint_path,
         model=model,
@@ -175,19 +183,19 @@ def train_one_epoch(
         scheduler=scheduler,
         amp_scaler=scaler if scaler_enabled else None,
         epoch=config.epoch,
-        step_count=len(losses),
-        global_step=config.global_step_start + len(losses),
+        step_count=step_count,
+        global_step=config.global_step_start + step_count,
         extra=_checkpoint_extra(config.checkpoint_extra_fn),
     )
 
-    mean_loss = sum(losses) / len(losses) if losses else 0.0
+    mean_loss = loss_sum / step_count if step_count else 0.0
     return TrainingEpochResult(
         epoch=config.epoch,
-        step_count=len(losses),
+        step_count=step_count,
         mean_loss=mean_loss,
         metrics_path=metrics_path,
         checkpoint_path=checkpoint_path,
-        global_step=config.global_step_start + len(losses),
+        global_step=config.global_step_start + step_count,
     )
 
 
@@ -228,9 +236,9 @@ def train_epochs(
             remaining = int(config.max_batches) - int(trained_batches)
             if remaining <= 0:
                 break
-        epoch_batches = list(batch_provider(epoch))
+        epoch_batches: Iterable[TrainingBatch] = batch_provider(epoch)
         if config.max_batches is not None:
-            epoch_batches = epoch_batches[:remaining]
+            epoch_batches = itertools.islice(epoch_batches, int(remaining))
         epoch_result = train_one_epoch(
             model=model,
             optimizer=optimizer,
@@ -284,9 +292,10 @@ def train_epochs(
             eval_metrics = _aggregate_eval_metrics(eval_loss_fn or loss_fn)
             if isinstance(eval_metrics, Mapping):
                 eval_row.update(dict(eval_metrics))
+            eval_core_row = _eval_core_metrics_row(eval_row)
             _append_jsonl(
                 layout.metrics_dir / "eval_metrics.jsonl",
-                eval_row,
+                eval_core_row,
             )
             if best_eval_loss is None or eval_loss < best_eval_loss:
                 best_eval_loss = eval_loss
@@ -380,6 +389,28 @@ def _aggregate_eval_metrics(loss_fn: LossFn | None):
     if callable(aggregate):
         return aggregate()
     return getattr(loss_fn, "last_metrics", None)
+
+
+def _training_core_metrics_row(metric_row: Mapping[str, object]) -> dict[str, object]:
+    core_keys = ("global_step", "loss")
+    row = {key: metric_row[key] for key in core_keys if key in metric_row}
+    row.update({key: value for key, value in metric_row.items() if str(key).startswith("profile_")})
+    return row
+
+
+def _eval_core_metrics_row(eval_row: Mapping[str, object]) -> dict[str, object]:
+    core_keys = (
+        "global_step",
+        "eval_loss",
+        "jaccard",
+        "rmse_lat",
+        "rmse_ax",
+        "recall",
+        "precision",
+        "predicted_emitters",
+        "target_emitters",
+    )
+    return {key: eval_row[key] for key in core_keys if key in eval_row}
 
 
 def _checkpoint_extra(checkpoint_extra_fn: CheckpointExtraFn | None) -> dict[str, object]:

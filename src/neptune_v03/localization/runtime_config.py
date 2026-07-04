@@ -316,11 +316,11 @@ def _training_runtime_contract(
     legacy_optimizer = _legacy_optimizer_contract(root_cfg, train_cfg)
     if legacy_optimizer is not None and _optimizer_matches_legacy(optimizer_name, optimizer_params, legacy_optimizer):
         legacy_optimizer = {**legacy_optimizer, "active": True, "inactive_reason": None}
-    return {
+    scheduler = _scheduler_contract(root_cfg)
+    contract = {
         "optimizer": {"name": str(optimizer_name), "params": dict(optimizer_params)},
         "legacy_optimizer": legacy_optimizer,
-        "scheduler": _scheduler_contract(root_cfg),
-        "max_batches": None if train_cfg.get("max_batches") is None else int(train_cfg["max_batches"]),
+        "scheduler": scheduler,
         "grad_clip": {"configured_norm": grad_clip_norm, "active": grad_clip_norm is not None},
         "amp": {
             "configured": amp_enabled,
@@ -329,6 +329,11 @@ def _training_runtime_contract(
             "inactive_reason": None if amp_enabled else "not_configured",
         },
     }
+    if train_cfg.get("max_batches") is not None:
+        contract["max_batches"] = int(train_cfg["max_batches"])
+    elif legacy_optimizer is not None or scheduler.get("legacy_source") is not None:
+        contract["max_batches"] = None
+    return contract
 
 
 def _resolve_training_optimizer_config(
@@ -497,6 +502,9 @@ def _online_provider_config(
             "background": float(online_cfg.get("background", 0.0)),
             "signal": float(online_cfg.get("signal", 1.0)),
             "simulation_backend": str(online_cfg.get("simulation_backend", "native")),
+            "simulation_output_device": str(online_cfg.get("simulation_output_device", "cpu")),
+            "cached_window_order": str(online_cfg.get("cached_window_order", "auto")),
+            "cached_window_max_gpu_sequences": int(online_cfg.get("cached_window_max_gpu_sequences", 0)),
             "psf_type": str(online_cfg.get("psf_type", psf_cfg.get("psf_type", "vector"))),
             "pixel_size_nm_x": pixel_size_nm_x,
             "pixel_size_nm_y": pixel_size_nm_y,
@@ -505,6 +513,13 @@ def _online_provider_config(
             "npupil": int(online_cfg.get("npupil", vector_cfg.get("npupil", 128))),
             "vector_psf_size": int(online_cfg.get("vector_psf_size", (online_cfg.get("lut_simulation") or {}).get("psf_size", vector_cfg.get("psf_size", 51)))),
             "vector_batch_size": int(online_cfg.get("vector_batch_size", vector_cfg.get("batch_size", 96))),
+            "lut_field_stride": int((online_cfg.get("lut_simulation") or {}).get("field_stride", online_cfg.get("lut_field_stride", 16))),
+            "lut_z_steps": int(online_cfg.get("nat_grid_z_steps", (online_cfg.get("lut_simulation") or {}).get("z_steps", online_cfg.get("lut_z_steps", 41)))),
+            "lut_subpixel_bins": int((online_cfg.get("lut_simulation") or {}).get("subpixel_bins", online_cfg.get("lut_subpixel_bins", 1))),
+            "lut_field_mode": str((online_cfg.get("lut_simulation") or {}).get("field_mode", online_cfg.get("lut_field_mode", "roi_origin"))),
+            "lut_storage_dtype": str((online_cfg.get("lut_simulation") or {}).get("storage_dtype", online_cfg.get("lut_storage_dtype", "fp32"))),
+            "field_origin_sampling_mode": str(online_cfg.get("field_origin_sampling_mode", "grid")),
+            "field_origin_stride_px": int(online_cfg.get("field_origin_stride_px", online_cfg.get("field_origin_stride", 40))),
             **sim_ranges,
             "conditioning_mode": str(online_cfg.get("conditioning_mode", "channels")),
             "nat_simulation_mode": str(online_cfg.get("nat_simulation_mode", "tile_center")),

@@ -7,7 +7,9 @@ from typing import Any
 
 import numpy as np
 
-from .geometry import build_emitter_centered_candidates, select_fov_balanced_candidates
+from neptune_v03.field_origin import build_sliding_window_origin_bank
+
+from .geometry import build_emitter_centered_candidates, build_sliding_window_guided_candidates, select_fov_balanced_candidates
 from .hdf5 import save_roi_bank
 from .types import EmitterPosterior, ROIBank, ROICandidate, ROIRecord
 
@@ -54,8 +56,11 @@ class ROIBankBuildConfig:
     max_overlap_fraction: float = 0.95
     seed: int = 0
     background_smoothing_kernel: int = 9
-    camera_backward: dict[str, float] | None = None
+    camera_backward: dict[str, Any] | None = None
     over_cut_px: int = 0
+    origin_mode: str = "emitter_centered"
+    origin_stride_px: int | None = None
+    valid_core_size_px: int | None = None
 
 
 InferFn = Callable[..., RawInferenceResult]
@@ -71,7 +76,8 @@ def build_roi_bank_from_inference(
 ) -> ROIBank:
     cfg = config or ROIBankBuildConfig()
     use_lazy_domain_tiff = isinstance(raw_frames_photon, (str, Path)) and cfg.frame_range is not None
-    frames = None if use_lazy_domain_tiff else _camera_backward_photons(_load_raw_frames(raw_frames_photon), cfg.camera_backward)
+    raw_frames = None if use_lazy_domain_tiff else _load_raw_frames(raw_frames_photon)
+    frames = None if raw_frames is None else raw_frames
     window_config = cfg
     if use_lazy_domain_tiff:
         frame_count = int(cfg.frame_range[1]) - int(cfg.frame_range[0])
@@ -89,21 +95,26 @@ def build_roi_bank_from_inference(
             background_smoothing_kernel=cfg.background_smoothing_kernel,
             camera_backward=None,
             over_cut_px=cfg.over_cut_px,
+            origin_mode=cfg.origin_mode,
+            origin_stride_px=cfg.origin_stride_px,
+            valid_core_size_px=cfg.valid_core_size_px,
         )
     else:
         frame_count = int(frames.shape[0])
     windows = _iter_frame_windows(frame_count, config=window_config)
     records: list[ROIRecord] = []
     empty_cells: set[int] = set()
+    camera_backward_by_domain: dict[str, dict[str, Any]] = {}
 
     for domain in domains:
         if use_lazy_domain_tiff:
-            domain_frames = _camera_backward_photons(
-                _load_raw_domain_frames(raw_frames_photon, domain=domain, frame_range=cfg.frame_range),
-                cfg.camera_backward,
-            )
+            domain_frames_adu = _load_raw_domain_frames(raw_frames_photon, domain=domain, frame_range=cfg.frame_range)
         else:
-            domain_frames = _crop_domain(frames, domain)
+            domain_frames_adu = _crop_domain(frames, domain)
+        domain_camera_backward = _camera_backward_params_for_domain(cfg.camera_backward, domain=domain, frames_adu=domain_frames_adu)
+        if domain_camera_backward is not None:
+            camera_backward_by_domain[str(domain.name)] = domain_camera_backward
+        domain_frames = _camera_backward_photons(domain_frames_adu, domain_camera_backward)
         domain_candidates = []
         candidate_context: dict[int, tuple[ROIBankDomain, tuple[int, int], RawInferenceResult]] = {}
         next_candidate_id = 0
@@ -120,13 +131,11 @@ def build_roi_bank_from_inference(
                 continue
             xy = np.asarray([e.mu_xy_px for e in emitters], dtype=np.float32)
             probs = np.asarray([e.probability for e in emitters], dtype=np.float32)
-            candidates = build_emitter_centered_candidates(
+            candidates = _build_candidates(
                 xy_px=xy,
                 probabilities=probs,
-                domain_width_px=domain.crop_width,
-                domain_height_px=domain.crop_height,
-                roi_size_px=cfg.roi_size_px,
-                grid_shape=cfg.grid_shape,
+                domain=domain,
+                config=cfg,
             )
             for candidate in candidates:
                 reindexed = _replace_candidate_id(candidate, candidate_id=next_candidate_id)
@@ -175,8 +184,15 @@ def build_roi_bank_from_inference(
             "target_emitters": int(cfg.target_emitters),
             "candidate_probability_threshold": float(cfg.candidate_probability_threshold),
             "probability_threshold": float(cfg.probability_threshold),
+            "origin_mode": str(cfg.origin_mode),
+            "origin_stride_px": None if cfg.origin_stride_px is None else int(cfg.origin_stride_px),
+            "valid_core_size_px": None if cfg.valid_core_size_px is None else int(cfg.valid_core_size_px),
+            "origin_bank_size": _origin_bank_size(cfg, domains=domains),
         },
-        metadata={"seed": int(cfg.seed)},
+        metadata={
+            "seed": int(cfg.seed),
+            **({"camera_backward": _camera_backward_metadata(cfg.camera_backward, camera_backward_by_domain)} if cfg.camera_backward else {}),
+        },
         empty_grid_cell_ids=tuple(sorted(empty_cells)),
     )
     if output_h5_path is not None:
@@ -193,7 +209,60 @@ def _replace_candidate_id(candidate: ROICandidate, *, candidate_id: int) -> ROIC
         emitter_indices=candidate.emitter_indices,
         emitter_count=int(candidate.emitter_count),
         quality_score=float(candidate.quality_score),
+        origin_bank_index=candidate.origin_bank_index,
+        valid_core_origin_xy_px=candidate.valid_core_origin_xy_px,
+        valid_core_offset_xy_px=candidate.valid_core_offset_xy_px,
+        valid_core_size_px=candidate.valid_core_size_px,
     )
+
+
+def _build_candidates(
+    *,
+    xy_px: np.ndarray,
+    probabilities: np.ndarray,
+    domain: ROIBankDomain,
+    config: ROIBankBuildConfig,
+) -> tuple[ROICandidate, ...]:
+    mode = str(config.origin_mode or "emitter_centered").strip().lower()
+    if mode in {"emitter_centered", "legacy", "clamp"}:
+        return build_emitter_centered_candidates(
+            xy_px=xy_px,
+            probabilities=probabilities,
+            domain_width_px=domain.crop_width,
+            domain_height_px=domain.crop_height,
+            roi_size_px=config.roi_size_px,
+            grid_shape=config.grid_shape,
+        )
+    if mode in {"sliding_window_guided", "sliding_window", "field_origin_bank"}:
+        stride = int(config.origin_stride_px or config.roi_size_px)
+        return build_sliding_window_guided_candidates(
+            xy_px=xy_px,
+            probabilities=probabilities,
+            domain_width_px=domain.crop_width,
+            domain_height_px=domain.crop_height,
+            roi_size_px=config.roi_size_px,
+            stride_px=stride,
+            grid_shape=config.grid_shape,
+            valid_core_size_px=config.valid_core_size_px,
+        )
+    raise ValueError("origin_mode must be 'emitter_centered' or 'sliding_window_guided'")
+
+
+def _origin_bank_size(config: ROIBankBuildConfig, *, domains: Sequence[ROIBankDomain]) -> int | None:
+    mode = str(config.origin_mode or "emitter_centered").strip().lower()
+    if mode not in {"sliding_window_guided", "sliding_window", "field_origin_bank"}:
+        return None
+    if not domains:
+        return 0
+    domain = domains[0]
+    origins = build_sliding_window_origin_bank(
+        field_width_px=int(domain.crop_width),
+        field_height_px=int(domain.crop_height),
+        roi_width_px=int(config.valid_core_size_px or config.roi_size_px),
+        roi_height_px=int(config.valid_core_size_px or config.roi_size_px),
+        stride_px=int(config.origin_stride_px or config.roi_size_px),
+    )
+    return int(len(origins))
 
 
 def _build_record(
@@ -222,6 +291,17 @@ def _build_record(
         and float(emitter.probability) >= float(config.probability_threshold)
     )
     full_origin_xy = (float(domain.crop_left + x0), float(domain.crop_top + y0))
+    valid_core_origin_xy = None
+    valid_core_offset_xy = None
+    if candidate.valid_core_origin_xy_px is not None:
+        valid_core_origin_xy = (
+            float(domain.crop_left + int(candidate.valid_core_origin_xy_px[0])),
+            float(domain.crop_top + int(candidate.valid_core_origin_xy_px[1])),
+        )
+        valid_core_offset_xy = (
+            float(int(candidate.valid_core_origin_xy_px[0]) - x0),
+            float(int(candidate.valid_core_origin_xy_px[1]) - y0),
+        )
     return ROIRecord(
         roi_id=int(roi_id),
         domain_name=domain.name,
@@ -237,6 +317,13 @@ def _build_record(
             "emitter_count": len(emitters),
             "domain_local_roi_origin_xy_px": (float(x0), float(y0)),
             "full_fov_roi_origin_xy_px": full_origin_xy,
+            **({} if candidate.origin_bank_index is None else {"roi_origin_index": int(candidate.origin_bank_index)}),
+            **({} if config.origin_stride_px is None else {"roi_origin_stride_px": int(config.origin_stride_px)}),
+            **({} if candidate.valid_core_size_px is None else {"valid_core_size_px": int(candidate.valid_core_size_px)}),
+            **({} if valid_core_origin_xy is None else {"valid_core_origin_xy_px": valid_core_origin_xy}),
+            **({} if valid_core_offset_xy is None else {"valid_core_offset_xy_px": valid_core_offset_xy}),
+            **({"context_roi_origin_xy_px": full_origin_xy} if candidate.valid_core_size_px is not None else {}),
+            **({"context_roi_size_px": int(config.roi_size_px)} if candidate.valid_core_size_px is not None else {}),
         },
     )
 
@@ -335,7 +422,63 @@ def _load_raw_domain_frames(
     return np.ascontiguousarray(np.concatenate(crops, axis=0), dtype=np.float32)
 
 
-def _camera_backward_photons(frames: np.ndarray, params: dict[str, float] | None) -> np.ndarray:
+def _camera_backward_params_for_domain(
+    params: dict[str, Any] | None,
+    *,
+    domain: ROIBankDomain,
+    frames_adu: np.ndarray,
+) -> dict[str, Any] | None:
+    if not params:
+        return None
+    resolved = dict(params)
+    baseline_by_domain = resolved.get("baseline_by_domain")
+    if isinstance(baseline_by_domain, dict) and str(domain.name) in baseline_by_domain:
+        resolved["baseline"] = float(baseline_by_domain[str(domain.name)])
+    elif str(resolved.get("baseline_mode", "")).strip().lower() in {"per_domain_percentile", "domain_percentile"}:
+        percentile = float(resolved.get("baseline_percentile", 1.0))
+        resolved["baseline"] = _estimate_domain_baseline(frames_adu, percentile=percentile)
+    resolved.pop("baseline_mode", None)
+    resolved.pop("baseline_percentile", None)
+    resolved.pop("baseline_frame_range", None)
+    return resolved
+
+
+def _estimate_domain_baseline(frames_adu: np.ndarray, *, percentile: float) -> float:
+    frames = np.asarray(frames_adu, dtype=np.float32)
+    if frames.size == 0:
+        return 0.0
+    pct = float(np.clip(percentile, 0.0, 100.0))
+    per_frame = np.percentile(frames.reshape((frames.shape[0], -1)), pct, axis=1)
+    return float(np.median(per_frame))
+
+
+def _camera_backward_metadata(
+    params: dict[str, Any] | None,
+    resolved_by_domain: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    if not params:
+        return {}
+    metadata = {key: value for key, value in dict(params).items() if key != "baseline_by_domain"}
+    has_domain_specific_baseline = (
+        isinstance(params.get("baseline_by_domain"), dict)
+        or str(params.get("baseline_mode", "")).strip().lower() in {"per_domain_percentile", "domain_percentile"}
+    )
+    if resolved_by_domain and has_domain_specific_baseline:
+        metadata["baseline_by_domain"] = {
+            domain: float(resolved.get("baseline", 0.0)) for domain, resolved in sorted(resolved_by_domain.items())
+        }
+        metadata["resolved_by_domain"] = {
+            domain: {
+                key: float(value)
+                for key, value in resolved.items()
+                if key in {"baseline", "baseline_adu", "e_per_adu", "em_gain", "qe", "spurious_charge"}
+            }
+            for domain, resolved in sorted(resolved_by_domain.items())
+        }
+    return metadata
+
+
+def _camera_backward_photons(frames: np.ndarray, params: dict[str, Any] | None) -> np.ndarray:
     if not params:
         return np.asarray(frames, dtype=np.float32)
     qe = float(params.get("qe", 1.0))

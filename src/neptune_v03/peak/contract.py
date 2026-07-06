@@ -33,6 +33,7 @@ class PeakBootstrapConfig:
     alternating_local_warmup_rounds: int = 0
     alternating_local_warmup_steps: int = 0
     alternating_optimizer_kind: str = "lm"
+    formal_export_stage: str = "alternating"
     global_projected_min_distance_px: float = 10.0
     spatial_balance_grid_px: int = 100
     spatial_balance_max_per_cell: int = 0

@@ -167,7 +167,7 @@ def run_peak_bootstrap_pipeline(
         output_dir=diagnostics_dir,
     )
     diagnostics_summary = dict(diagnostics_result["summary"])
-    preferred_stage = _preferred_export_stage(diagnostics_summary)
+    preferred_stage = _resolve_formal_export_stage(config, diagnostics_summary)
     ncc = runner.summarize_ncc(
         config=config,
         diagnostics=diagnostics_summary,
@@ -218,6 +218,15 @@ def _preferred_export_stage(summary: dict[str, Any]) -> str:
     if alt_ncc is None:
         return "approximate"
     return "approximate" if float(approx_ncc) > float(alt_ncc) else "alternating"
+
+
+def _resolve_formal_export_stage(config: PeakBootstrapConfig, summary: dict[str, Any]) -> str:
+    stage = str(config.formal_export_stage).strip().lower().replace("-", "_")
+    if stage in {"", "preferred", "best", "best_ncc"}:
+        return _preferred_export_stage(summary)
+    if stage in {"alternating", "approximate"}:
+        return stage
+    raise ValueError("formal_export_stage must be 'preferred', 'alternating', or 'approximate'.")
 
 
 def _patch_ncc_mean(metrics: Any) -> float | None:

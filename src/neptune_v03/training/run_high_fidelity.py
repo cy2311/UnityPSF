@@ -438,6 +438,7 @@ def _peak_bootstrap_config(
         alternating_local_warmup_rounds=int(bootstrap_cfg.get("alternating_local_warmup_rounds", 0)),
         alternating_local_warmup_steps=int(bootstrap_cfg.get("alternating_local_warmup_steps", 0)),
         alternating_optimizer_kind=str(bootstrap_cfg.get("alternating_optimizer_kind", "lm")),
+        formal_export_stage=str(bootstrap_cfg.get("formal_export_stage", "alternating")),
         global_projected_min_distance_px=float(bootstrap_cfg.get("global_projected_min_distance_px", 10.0)),
         spatial_balance_grid_px=int(bootstrap_cfg.get("spatial_balance_grid_px", 100)),
         spatial_balance_max_per_cell=int(bootstrap_cfg.get("spatial_balance_max_per_cell", 0)),

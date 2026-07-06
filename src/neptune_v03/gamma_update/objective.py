@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 
 from neptune_v03.localization.posterior import DetectionPosteriorSamples
-from neptune_v03.optics.nat_field import NATFieldConfig, default_order1_config, evaluate_zernike_from_roi_positions_torch
+from neptune_v03.optics.nat_field import NATFieldConfig, build_named_nat_config, evaluate_zernike_from_roi_positions_torch
 from neptune_v03.optics.vector_psf import VectorPSFParams, build_vector_psf_context, noll_to_nm, render_vector_psf_bank
 from neptune_v03.runtime.profiling import time_block
 
@@ -35,6 +35,7 @@ class GammaProjectionObjectiveConfig:
     objective_mode: str = "poisson_nll"
     projection_sample_batch_size: int = 16
     projection_emitter_chunk_size: int = 1024
+    nat_config_kind: str = "order1"
 
 
 class GammaProjectionObjective:
@@ -49,7 +50,8 @@ class GammaProjectionObjective:
     ) -> None:
         self.config = GammaProjectionObjectiveConfig() if config is None else config
         self.device = torch.device("cpu" if device is None else device)
-        self.nat_config = nat_config or default_order1_config(
+        self.nat_config = nat_config or build_named_nat_config(
+            str(self.config.nat_config_kind),
             img_size_x=int(self.config.image_size_x),
             img_size_y=int(self.config.image_size_y),
             pixel_size_x_nm=float(self.config.pixel_size_x_nm),

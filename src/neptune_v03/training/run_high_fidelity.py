@@ -972,6 +972,7 @@ def _build_vector_roi_gamma_objective(
     device = next(model.parameters()).device
     online_cfg = train_cfg.get("online_generation") if isinstance(train_cfg.get("online_generation"), Mapping) else {}
     nat_wake_cfg = train_cfg.get("nat_wake") if isinstance(train_cfg.get("nat_wake"), Mapping) else {}
+    bootstrap_cfg = train_cfg.get("peak_zmap_bootstrap") if isinstance(train_cfg.get("peak_zmap_bootstrap"), Mapping) else {}
     roi_size = int(gamma_cfg.get("roi_size_px", online_cfg.get("width", 128)))
     image_size_x = int(gamma_cfg.get("image_size_x", nat_wake_cfg.get("image_size_x", roi_size)))
     image_size_y = int(gamma_cfg.get("image_size_y", nat_wake_cfg.get("image_size_y", roi_size)))
@@ -1003,6 +1004,7 @@ def _build_vector_roi_gamma_objective(
                     gamma_cfg.get("projection_emitter_chunk_size", nat_wake_cfg.get("roi_bank_projection_emitter_chunk_size", 1024)),
                 )
             ),
+            nat_config_kind=str(gamma_cfg.get("nat_config_kind", bootstrap_cfg.get("nat_config_kind", "order1"))),
         ),
         device=device,
     )
@@ -1231,7 +1233,7 @@ def _sample_roi_bank_posterior_update_from_cached_emitters(
         roi_groups_raw = gamma_cfg.get("roi_groups_per_update")
         roi_groups_per_update = None if roi_groups_raw is None else int(roi_groups_raw)
         sample_count = int(gamma_cfg.get("num_posterior_samples", 1))
-        probability_threshold = float(gamma_cfg.get("probability_threshold", gamma_cfg.get("posterior_probability_threshold", 0.5)))
+        probability_threshold = float(gamma_cfg.get("posterior_probability_threshold", gamma_cfg.get("probability_threshold", 0.5)))
         stochastic_existence = bool(gamma_cfg.get("stochastic_existence", False))
         sample_continuous = bool(gamma_cfg.get("sample_continuous", True))
         roi_size_px = int(gamma_cfg.get("roi_size_px", 128))
@@ -1376,7 +1378,7 @@ def _sample_roi_bank_posterior_update_from_current_model(
         device=_model_device(model),
         config=ROIPosteriorSamplingConfig(
             probability_threshold=float(
-                gamma_cfg.get("probability_threshold", gamma_cfg.get("posterior_probability_threshold", 0.5))
+                gamma_cfg.get("posterior_probability_threshold", gamma_cfg.get("probability_threshold", 0.5))
             ),
             candidate_probability_threshold=float(
                 gamma_cfg.get("posterior_candidate_probability_threshold", gamma_cfg.get("candidate_probability_threshold", 0.3))

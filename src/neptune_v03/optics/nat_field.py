@@ -74,6 +74,74 @@ def default_order1_config(
     )
 
 
+def order1_13_config(
+    *,
+    img_size_x: int = 1024,
+    img_size_y: int = 1024,
+    pixel_size_x_nm: float = 95.0,
+    pixel_size_y_nm: float = 95.0,
+) -> NATFieldConfig:
+    base = default_order1_config(
+        img_size_x=img_size_x,
+        img_size_y=img_size_y,
+        pixel_size_x_nm=pixel_size_x_nm,
+        pixel_size_y_nm=pixel_size_y_nm,
+    )
+    gammas = base.gammas + (
+        NATGamma((NATComponent(0, 0, 3, 1, 1.0),)),
+        NATGamma((NATComponent(0, 0, 3, -1, 1.0),)),
+        NATGamma((NATComponent(1, 0, 3, 1, 1.0), NATComponent(0, 1, 3, -1, 1.0))),
+        NATGamma((NATComponent(0, 0, 4, 0, 1.0),)),
+        NATGamma((NATComponent(0, 0, 3, 3, 1.0), NATComponent(0, 0, 3, -3, 1.0))),
+    )
+    return NATFieldConfig(
+        aberrations=base.aberrations,
+        gammas=gammas,
+        img_size_x=int(img_size_x),
+        img_size_y=int(img_size_y),
+        pixel_size_x_nm=float(pixel_size_x_nm),
+        pixel_size_y_nm=float(pixel_size_y_nm),
+    )
+
+
+def order1_21_config(
+    *,
+    img_size_x: int = 1024,
+    img_size_y: int = 1024,
+    pixel_size_x_nm: float = 95.0,
+    pixel_size_y_nm: float = 95.0,
+) -> NATFieldConfig:
+    base = default_order1_config(
+        img_size_x=img_size_x,
+        img_size_y=img_size_y,
+        pixel_size_x_nm=pixel_size_x_nm,
+        pixel_size_y_nm=pixel_size_y_nm,
+    )
+    gammas = base.gammas + (
+        NATGamma((NATComponent(0, 0, 3, 1, 1.0),)),
+        NATGamma((NATComponent(0, 0, 3, -1, 1.0),)),
+        NATGamma((NATComponent(1, 0, 3, 1, 1.0),)),
+        NATGamma((NATComponent(0, 1, 3, 1, 1.0),)),
+        NATGamma((NATComponent(1, 0, 3, -1, 1.0),)),
+        NATGamma((NATComponent(0, 1, 3, -1, 1.0),)),
+        NATGamma((NATComponent(0, 0, 4, 0, 1.0),)),
+        NATGamma((NATComponent(1, 0, 4, 0, 1.0),)),
+        NATGamma((NATComponent(0, 1, 4, 0, 1.0),)),
+        NATGamma((NATComponent(0, 0, 3, 3, 1.0),)),
+        NATGamma((NATComponent(0, 0, 3, -3, 1.0),)),
+        NATGamma((NATComponent(1, 0, 3, 3, 1.0), NATComponent(0, 1, 3, -3, 1.0))),
+        NATGamma((NATComponent(0, 1, 3, 3, -1.0), NATComponent(1, 0, 3, -3, 1.0))),
+    )
+    return NATFieldConfig(
+        aberrations=base.aberrations,
+        gammas=gammas,
+        img_size_x=int(img_size_x),
+        img_size_y=int(img_size_y),
+        pixel_size_x_nm=float(pixel_size_x_nm),
+        pixel_size_y_nm=float(pixel_size_y_nm),
+    )
+
+
 def build_named_nat_config(
     name: str,
     *,
@@ -85,6 +153,20 @@ def build_named_nat_config(
     normalized = str(name).strip().lower().replace("-", "_")
     if normalized in {"order1", "first_order", "j1"}:
         return default_order1_config(
+            img_size_x=img_size_x,
+            img_size_y=img_size_y,
+            pixel_size_x_nm=pixel_size_x_nm,
+            pixel_size_y_nm=pixel_size_y_nm,
+        )
+    if normalized in {"order1_13", "j1_13", "zernike13", "zernike_13"}:
+        return order1_13_config(
+            img_size_x=img_size_x,
+            img_size_y=img_size_y,
+            pixel_size_x_nm=pixel_size_x_nm,
+            pixel_size_y_nm=pixel_size_y_nm,
+        )
+    if normalized in {"order1_21", "j1_21", "zernike21", "zernike_21"}:
+        return order1_21_config(
             img_size_x=img_size_x,
             img_size_y=img_size_y,
             pixel_size_x_nm=pixel_size_x_nm,
@@ -254,6 +336,8 @@ __all__ = [
     "NATGamma",
     "build_named_nat_config",
     "default_order1_config",
+    "order1_13_config",
+    "order1_21_config",
     "evaluate_zernike_coefficients_torch",
     "evaluate_zernike_from_roi_positions_torch",
     "full_roi_coeff_stack_torch",

@@ -366,15 +366,50 @@ def _lookup_lut_patches(
             local_y_input = local_y_input + float(origin_y)
         z = z_um.to(device=bank.patches.device, dtype=torch.float32).reshape(-1)
         phot = photons.to(device=bank.patches.device, dtype=torch.float32).reshape(-1)
-        tile_x_idx = torch.argmin(torch.abs(local_x_input[:, None] - bank.tile_x[None, :]), dim=1)
-        tile_y_idx = torch.argmin(torch.abs(local_y_input[:, None] - bank.tile_y[None, :]), dim=1)
-        z_idx = torch.argmin(torch.abs(z[:, None] - bank.z_bins[None, :]), dim=1)
+        field_x = torch.floor(local_x_input).clamp(float(bank.tile_x[0].item()), float(bank.tile_x[-1].item()))
+        field_y = torch.floor(local_y_input).clamp(float(bank.tile_y[0].item()), float(bank.tile_y[-1].item()))
+        x0_idx, x1_idx, wx = _linear_lut_indices_and_weight(field_x, bank.tile_x)
+        y0_idx, y1_idx, wy = _linear_lut_indices_and_weight(field_y, bank.tile_y)
+        z0_idx, z1_idx, wz = _linear_lut_indices_and_weight(z, bank.z_bins)
         local_x = local_x_input - (torch.floor(local_x_input) + 0.5)
         local_y = local_y_input - (torch.floor(local_y_input) + 0.5)
         sub_x_idx = torch.argmin(torch.abs(local_x[:, None] - bank.subpixel_bins[None, :]), dim=1)
         sub_y_idx = torch.argmin(torch.abs(local_y[:, None] - bank.subpixel_bins[None, :]), dim=1)
-        patches = bank.patches[tile_y_idx, tile_x_idx, z_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p000 = bank.patches[y0_idx, x0_idx, z0_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p001 = bank.patches[y0_idx, x0_idx, z1_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p010 = bank.patches[y0_idx, x1_idx, z0_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p011 = bank.patches[y0_idx, x1_idx, z1_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p100 = bank.patches[y1_idx, x0_idx, z0_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p101 = bank.patches[y1_idx, x0_idx, z1_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p110 = bank.patches[y1_idx, x1_idx, z0_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        p111 = bank.patches[y1_idx, x1_idx, z1_idx, sub_y_idx, sub_x_idx].to(dtype=torch.float32)
+        wx = wx.view(-1, 1, 1)
+        wy = wy.view(-1, 1, 1)
+        wz = wz.view(-1, 1, 1)
+        p00 = p000 * (1.0 - wz) + p001 * wz
+        p01 = p010 * (1.0 - wz) + p011 * wz
+        p10 = p100 * (1.0 - wz) + p101 * wz
+        p11 = p110 * (1.0 - wz) + p111 * wz
+        top = p00 * (1.0 - wx) + p01 * wx
+        bottom = p10 * (1.0 - wx) + p11 * wx
+        patches = top * (1.0 - wy) + bottom * wy
         return patches * phot[:, None, None]
+
+
+def _linear_lut_indices_and_weight(values: torch.Tensor, grid: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    grid = grid.to(device=values.device, dtype=torch.float32).reshape(-1)
+    values = values.to(device=grid.device, dtype=torch.float32).reshape(-1)
+    if int(grid.numel()) <= 1:
+        idx = torch.zeros_like(values, dtype=torch.long)
+        return idx, idx, torch.zeros_like(values, dtype=torch.float32)
+    v = values.clamp(float(grid[0].item()), float(grid[-1].item()))
+    hi = torch.searchsorted(grid, v, right=False)
+    hi = torch.clamp(hi, 0, int(grid.numel()) - 1)
+    lo = torch.clamp(hi - 1, 0, int(grid.numel()) - 1)
+    g0 = grid[lo]
+    g1 = grid[hi]
+    weight = torch.where(g1 > g0, (v - g0) / (g1 - g0), torch.zeros_like(v))
+    return lo, hi, weight
 
 
 def _apply_lut_subpixel_shift(

@@ -47,6 +47,8 @@ ROI_STRIDE="${ROI_STRIDE:-88}"
 START_EPOCH="${START_EPOCH:-30}"
 UPDATE_INTERVAL_EPOCHS="${UPDATE_INTERVAL_EPOCHS:-5}"
 TARGET_PROJECTED_EMITTERS="${TARGET_PROJECTED_EMITTERS:-5000}"
+ROI_GAMMA_ARTIFACT_RETENTION_POLICY="${ROI_GAMMA_ARTIFACT_RETENTION_POLICY:-compact_latest}"
+ROI_GAMMA_DIAGNOSTIC_INTERVAL_UPDATES="${ROI_GAMMA_DIAGNOSTIC_INTERVAL_UPDATES:-10}"
 LR_STEP_UNIT="${LR_STEP_UNIT:-epoch}"
 LR_STEP_SIZE="${LR_STEP_SIZE:-10}"
 LR_GAMMA="${LR_GAMMA:-0.9}"
@@ -58,6 +60,8 @@ NAT_GRID_SIZE_X="${NAT_GRID_SIZE_X:-2}"
 NAT_GRID_SIZE_Y="${NAT_GRID_SIZE_Y:-2}"
 
 RUN_TAG="${RUN_TAG:-fast_route_roi128_psf51_oldzmap_3052lr_start30_interval5_emit5000_qualitygate_epoch${EPOCHS}_bs${BATCH_SIZE}_steps${STEPS_PER_EPOCH}}"
+INITIAL_ZMAP_TAG="${INITIAL_ZMAP_TAG:-3052_old_zmap}"
+STANDARD_NOTE="${STANDARD_NOTE:-Fast LUT/prewarm/projection route with ROI128, PSF51, initial zmap, start30 interval5, target_projected_emitters=5000, explicit posterior quality gates, and 3052 scheduler parity: StepLR(step_size=10, gamma=0.9) stepped once per epoch.}"
 RUN_ROOT="$NEPTUNE_DIR/output/$RUN_TAG"
 RUN_NAME="${RUN_TAG}_${SLURM_JOB_ID:-local}"
 OVERRIDE_CONFIG="$NEPTUNE_DIR/.local/tmp/standard/${RUN_TAG}.yaml"
@@ -157,6 +161,8 @@ train:
     probability_threshold: 0.5
     gamma_steps: 100
     gamma_lr: 0.025
+    artifact_retention_policy: ${ROI_GAMMA_ARTIFACT_RETENTION_POLICY}
+    diagnostic_interval_updates: ${ROI_GAMMA_DIAGNOSTIC_INTERVAL_UPDATES}
     target_projected_emitters: ${TARGET_PROJECTED_EMITTERS}
     max_sampling_rounds: 20
     num_posterior_samples: 25
@@ -170,11 +176,11 @@ smlm_overrides:
   lr_step_unit: ${LR_STEP_UNIT}
 metadata:
   training_mode: neptune_v03_fast_route_3052_strength_oldzmap
-  initial_zmap_tag: 3052_old_zmap
+  initial_zmap_tag: ${INITIAL_ZMAP_TAG}
   scheduler_step_unit: ${LR_STEP_UNIT}
   scheduler_step_size: ${LR_STEP_SIZE}
   scheduler_gamma: ${LR_GAMMA}
-  standard_note: "Fast LUT/prewarm/projection route with ROI128, PSF51, 3052 old zmap, start30 interval5, target_projected_emitters=5000, explicit posterior quality gates, and 3052 scheduler parity: StepLR(step_size=10, gamma=0.9) stepped once per epoch."
+  standard_note: "${STANDARD_NOTE}"
 YAML
 
 echo "job_id=${SLURM_JOB_ID:-local}"
@@ -201,6 +207,7 @@ echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
 echo "raw_tiff=${NEPTUNE_V03_RAW_TIFF_PATH}"
 echo "initial_zmap_left=${ZMAP_LEFT}"
 echo "initial_zmap_right=${ZMAP_RIGHT}"
+echo "initial_zmap_tag=${INITIAL_ZMAP_TAG}"
 echo "projection_backend=${NEPTUNE_V03_PROJECTION_BACKEND}"
 echo "lut_epoch_prewarm=${NEPTUNE_V03_LUT_EPOCH_PREWARM}"
 echo "run_root=${RUN_ROOT}"

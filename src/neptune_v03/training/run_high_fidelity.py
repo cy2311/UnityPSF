@@ -619,6 +619,7 @@ def _build_domain_roi_bank_gamma_hooks(
                 metrics_fn=metrics_fn,
                 feedback_fn=_build_gamma_feedback_fn(
                     objective,
+                    gamma_cfg=gamma_cfg,
                     layout=layout,
                     condition_store=condition_store,
                     domain_names=(domain_name,),
@@ -660,6 +661,23 @@ def _gamma_update_config(gamma_cfg: Mapping[str, Any], train_cfg: Mapping[str, A
     )
 
 
+def _should_write_gamma_artifacts(gamma_cfg: Mapping[str, Any], *, result: TrainingRunEpochResult | TrainingStepResult) -> bool:
+    policy = str(gamma_cfg.get("artifact_retention_policy", "per_update")).lower()
+    if policy not in {"compact", "compact_latest", "latest"}:
+        return True
+    interval = int(gamma_cfg.get("diagnostic_interval_updates", gamma_cfg.get("artifact_interval_updates", 10)) or 0)
+    start_epoch = int(gamma_cfg.get("start_epoch", 1))
+    stop_epoch = int(gamma_cfg.get("stop_epoch", 0) or 0)
+    update_interval = max(1, int(gamma_cfg.get("update_interval_epochs", gamma_cfg.get("interval_epochs", 1))))
+    epoch = int(result.epoch)
+    if stop_epoch > 0 and epoch >= stop_epoch:
+        return True
+    if interval <= 0:
+        return False
+    update_index = max(1, ((epoch - start_epoch) // update_interval) + 1)
+    return update_index == 1 or update_index % interval == 0
+
+
 def _split_roi_bank_by_domain(selected_bank: ROIBank, heldout_bank: ROIBank | None = None) -> dict[str, tuple[ROIBank, ROIBank | None]]:
     selected_by_domain: dict[str, list[ROIRecord]] = {}
     for record in selected_bank.records:
@@ -695,6 +713,7 @@ def _split_roi_bank_by_domain(selected_bank: ROIBank, heldout_bank: ROIBank | No
 def _build_gamma_feedback_fn(
     objective: GammaProjectionObjective,
     *,
+    gamma_cfg: Mapping[str, Any],
     layout,
     condition_store: ConditioningProviderStore | None,
     domain_names: tuple[str, ...] | None = None,
@@ -717,6 +736,7 @@ def _build_gamma_feedback_fn(
             layout=layout,
             epoch=int(result.epoch),
             global_step=int(result.global_step),
+            artifact_policy=str(gamma_cfg.get("artifact_retention_policy", "per_update")),
         )
         if deferred_committer is not None:
             store_entries = deferred_committer.stage(entries=entries, result=result)
@@ -855,6 +875,7 @@ def _export_gamma_feedback_coeff_maps(
     layout,
     epoch: int,
     global_step: int,
+    artifact_policy: str = "per_update",
 ) -> tuple[tuple[str, str], ...]:
     after_stack = full_roi_coeff_stack_torch(
         gamma.detach().to(device=objective.device, dtype=torch.float32),
@@ -877,14 +898,24 @@ def _export_gamma_feedback_coeff_maps(
         domains = {name: maps for name, maps in domains.items() if str(name) in wanted}
     for domain_name, base_maps in domains.items():
         maps = (base_maps.to(device=objective.device, dtype=torch.float32) + delta_maps).detach().cpu().numpy()
-        path = (
-            layout.artifacts_dir
-            / "roi_bank_gamma"
-            / f"step_{int(global_step):08d}"
-            / "feedback"
-            / _path_token(str(domain_name))
-            / "coeff_maps.npz"
-        )
+        if str(artifact_policy).lower() in {"compact", "compact_latest", "latest"}:
+            path = (
+                layout.artifacts_dir
+                / "roi_bank_gamma"
+                / "latest"
+                / "feedback"
+                / _path_token(str(domain_name))
+                / "coeff_maps.npz"
+            )
+        else:
+            path = (
+                layout.artifacts_dir
+                / "roi_bank_gamma"
+                / f"step_{int(global_step):08d}"
+                / "feedback"
+                / _path_token(str(domain_name))
+                / "coeff_maps.npz"
+            )
         path.parent.mkdir(parents=True, exist_ok=True)
         np.savez_compressed(
             path,
@@ -1807,6 +1838,8 @@ def _roi_bank_gamma_route(
         ),
         "gamma_steps": int(gamma_cfg.get("gamma_steps", gamma_cfg.get("steps", 1))),
         "gamma_lr": float(gamma_cfg.get("gamma_lr", gamma_cfg.get("lr", 0.01))),
+        "artifact_retention_policy": str(gamma_cfg.get("artifact_retention_policy", "per_update")),
+        "diagnostic_interval_updates": int(gamma_cfg.get("diagnostic_interval_updates", gamma_cfg.get("artifact_interval_updates", 10))),
         "objective_source": _gamma_objective_source(gamma_cfg, roi_source=roi_source),
         **({"roi_library_source": "auto_built"} if roi_source is not None else {}),
         **(_roi_bank_source_metrics(roi_source) if roi_source is not None else {}),
@@ -1977,21 +2010,34 @@ def _build_roi_projection_objective(
         }
         if roi_library_path is not None:
             metrics["roi_library_path"] = roi_library_path
-        metrics.update(
-            _write_gamma_monitor_report(
-                layout,
-                {**base_metrics, **metrics},
-                result=result,
-                raw_frames=context.raw_frames,
-                background=context.background,
-                samples=context.samples,
-                gamma_before=gamma_before,
-                gamma=gamma,
-                objective=objective,
-                roi_origin_xy_px=context.roi_origin_xy_px,
-                domain_names=context.domain_names,
+        if _should_write_gamma_artifacts(gamma_cfg, result=result):
+            metrics.update(
+                _write_gamma_monitor_report(
+                    layout,
+                    {**base_metrics, **metrics},
+                    result=result,
+                    raw_frames=context.raw_frames,
+                    background=context.background,
+                    samples=context.samples,
+                    gamma_before=gamma_before,
+                    gamma=gamma,
+                    objective=objective,
+                    roi_origin_xy_px=context.roi_origin_xy_px,
+                    domain_names=context.domain_names,
+                )
             )
-        )
+        else:
+            metrics.update(
+                {
+                    "summary_path": None,
+                    "report_path": None,
+                    "diagnostic_png_path": None,
+                    "diagnostic_observed_units": None,
+                    "diagnostics_manifest_path": None,
+                    "artifact_write_skipped": True,
+                    "artifact_retention_policy": str(gamma_cfg.get("artifact_retention_policy", "per_update")),
+                }
+            )
         return metrics
 
     return objective_fn, metrics_fn, prepare_fn
@@ -2120,12 +2166,16 @@ def _write_gamma_monitor_report(
         diagnostic_path,
         raw_frame=diagnostic_frame,
         reconstruction=reconstruction,
+        background=background[0],
+        raw_is_photon=raw_tiff_frame is None,
     )
     if raw_tiff_frame is not None:
         _write_raw_vs_reconstruction_png(
             observed_png_path,
             raw_frame=raw_frames[0],
             reconstruction=reconstruction,
+            background=background[0],
+            raw_is_photon=True,
         )
     payload = dict(metrics)
     diagnostic_rel = str(diagnostic_path.relative_to(layout.run_dir))
@@ -2232,6 +2282,7 @@ def _write_diagnostics_manifest(
         payload=payload,
         raw_frame=observed_photons_frame,
         reconstruction=reconstruction,
+        background=background[0] if background is not None and torch.as_tensor(background).ndim == 3 else background,
         layout=layout,
     )
     raw_patch = _write_raw_tiff_patch_recon_smoke(
@@ -2239,6 +2290,7 @@ def _write_diagnostics_manifest(
         payload=payload,
         raw_frame=raw_frame,
         reconstruction=reconstruction,
+        background=background[0] if background is not None and torch.as_tensor(background).ndim == 3 else background,
         layout=layout,
     )
     raw_patch_montage = None
@@ -2260,6 +2312,7 @@ def _write_diagnostics_manifest(
         payload=payload,
         observed_frame=observed_photons_frame,
         reconstruction=reconstruction,
+        background=background[0] if background is not None and torch.as_tensor(background).ndim == 3 else background,
         layout=layout,
     )
     model_triplet = None
@@ -2432,12 +2485,26 @@ def _write_fixed_roi_recon_smoke(
     payload: Mapping[str, object],
     raw_frame: torch.Tensor,
     reconstruction: torch.Tensor,
+    background: torch.Tensor | None = None,
     layout,
 ) -> dict[str, object]:
     residual = (raw_frame.detach().cpu() - reconstruction.detach().cpu()).abs()
     png_path = path / "fixed_roi_recon_smoke.png"
     summary_path = path / "fixed_roi_recon_summary.json"
-    _write_grayscale_png(png_path, _tile_frames_uint8([raw_frame, reconstruction, residual]))
+    display_scale = None
+    if background is not None:
+        display_scale = _background_anchored_display_scale([raw_frame, reconstruction], [background, background])
+        canvas = np.concatenate(
+            [
+                _to_uint8_background_anchored(raw_frame.detach().cpu(), background, display_scale),
+                _to_uint8_background_anchored(reconstruction.detach().cpu(), background, display_scale),
+                _to_uint8(residual.detach().cpu()),
+            ],
+            axis=1,
+        )
+    else:
+        canvas = _tile_frames_uint8([raw_frame, reconstruction, residual])
+    _write_grayscale_png(png_path, canvas)
     rms = float(torch.sqrt((residual.to(dtype=torch.float32).square()).mean()).item())
     summary = {
         "schema_version": "roi_gamma_fixed_roi_recon_smoke.v1",
@@ -2446,6 +2513,8 @@ def _write_fixed_roi_recon_smoke(
         "rendered_count": 1,
         "poisson_nll": _poisson_nll_value(raw_frame, reconstruction),
         "rms": rms,
+        "display_scale": display_scale,
+        "panels": ["corrected_camera_photon", "reconstruction_with_background", "absolute_residual"],
         "png_path": str(png_path.relative_to(layout.run_dir)),
     }
     path.mkdir(parents=True, exist_ok=True)
@@ -2459,18 +2528,34 @@ def _write_raw_tiff_patch_recon_smoke(
     payload: Mapping[str, object],
     raw_frame: torch.Tensor,
     reconstruction: torch.Tensor,
+    background: torch.Tensor | None = None,
     layout,
 ) -> dict[str, object]:
     residual = raw_frame.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
     png_path = path / "raw_tiff_patch_recon_smoke.png"
     summary_path = path / "raw_tiff_patch_recon_summary.json"
-    _write_grayscale_png(png_path, _tile_frames_uint8([raw_frame, reconstruction, residual.abs()]))
+    display_scale = None
+    if background is not None:
+        display_scale = _background_anchored_display_scale([reconstruction], [background])
+        canvas = np.concatenate(
+            [
+                _to_uint8(raw_frame.detach().cpu()),
+                _to_uint8_background_anchored(reconstruction.detach().cpu(), background, display_scale),
+                _to_uint8(residual.abs().detach().cpu()),
+            ],
+            axis=1,
+        )
+    else:
+        canvas = _tile_frames_uint8([raw_frame, reconstruction, residual.abs()])
+    _write_grayscale_png(png_path, canvas)
     summary = {
         "schema_version": "roi_gamma_raw_tiff_patch_recon_smoke.v1",
         "epoch": int(payload.get("epoch", 0)),
         "selected_patch_count": 1,
         "observed_units": "raw_tiff_adu",
-        "note": "Raw TIFF ADU and reconstruction are not in the same physical units; this diagnostic is visual only.",
+        "note": "Raw TIFF ADU and reconstruction are not in the same physical units; this diagnostic is visual only. Reconstruction uses background-anchored display when background is available.",
+        "display_scale": display_scale,
+        "panels": ["raw_tiff_adu", "reconstruction_with_background", "absolute_residual_unit_mixed"],
         "ncc": _ncc_value(raw_frame, reconstruction),
         "png_path": str(png_path.relative_to(layout.run_dir)),
     }
@@ -2502,7 +2587,7 @@ def _write_raw_tiff_patch_recon_montage(
     else:
         indices = sorted({int(round(v)) for v in np.linspace(0, batch_count - 1, num=rendered_count)})
 
-    rows: list[np.ndarray] = []
+    row_payloads: list[dict[str, torch.Tensor]] = []
     rendered_indices: list[int] = []
     ncc_values: list[float] = []
     roi_ids: list[object] = []
@@ -2535,15 +2620,48 @@ def _write_raw_tiff_patch_recon_montage(
                 corrected = observed_all[index]
         if corrected is None:
             corrected = raw_frame
-        residual = raw_frame.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
-        rows.append(_tile_frames_uint8([raw_frame, corrected, reconstruction, residual.abs()]))
+        residual = corrected.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
+        bkg_frame = background[index] if torch.as_tensor(background).ndim == 3 else background
+        row_payloads.append(
+            {
+                "raw_frame": raw_frame.detach().cpu(),
+                "corrected": corrected.detach().cpu(),
+                "reconstruction": reconstruction.detach().cpu(),
+                "residual_abs": residual.abs().detach().cpu(),
+                "background": torch.as_tensor(bkg_frame).detach().cpu(),
+            }
+        )
         rendered_indices.append(index)
-        ncc_values.append(_ncc_value(raw_frame, reconstruction))
+        ncc_values.append(_ncc_value(corrected, reconstruction))
         roi_ids.append(_metadata_item(samples.metadata.get("roi_id") if isinstance(samples.metadata, Mapping) else None, index))
         frame_indices.append(_metadata_item(samples.metadata.get("frame_index") if isinstance(samples.metadata, Mapping) else None, index))
 
-    if not rows:
+    if not row_payloads:
         return None
+    photon_frames = [item["corrected"] for item in row_payloads] + [item["reconstruction"] for item in row_payloads]
+    photon_backgrounds = [item["background"] for item in row_payloads] + [item["background"] for item in row_payloads]
+    display_scale = _background_anchored_display_scale(
+        photon_frames,
+        photon_backgrounds,
+    )
+    rows: list[np.ndarray] = []
+    for item in row_payloads:
+        background_frame = item["background"]
+        rows.append(
+            np.concatenate(
+                [
+                    _to_uint8(torch.as_tensor(item["raw_frame"])),
+                    _to_uint8_background_anchored(torch.as_tensor(item["corrected"]), torch.as_tensor(background_frame), display_scale),
+                    _to_uint8_background_anchored(
+                        torch.as_tensor(item["reconstruction"]),
+                        torch.as_tensor(background_frame),
+                        display_scale,
+                    ),
+                    _to_uint8(torch.as_tensor(item["residual_abs"])),
+                ],
+                axis=1,
+            )
+        )
     spacer = np.full((4, int(rows[0].shape[1])), 255, dtype=np.uint8)
     canvas_parts: list[np.ndarray] = []
     for row_index, row in enumerate(rows):
@@ -2559,12 +2677,13 @@ def _write_raw_tiff_patch_recon_montage(
         "epoch": int(payload.get("epoch", 0)),
         "selected_patch_count": int(len(rendered_indices)),
         "observed_units": "raw_tiff_adu",
-        "note": "Each row is raw TIFF ADU | corrected camera photon | reconstruction | absolute residual. Raw TIFF ADU and reconstruction are not in the same physical units; this diagnostic is visual only.",
+        "note": "Each row is raw TIFF ADU | corrected camera photon | reconstruction with background | photon-domain absolute residual. Corrected/reconstruction panels use a shared background-anchored display scale with background mapped to a fixed gray level.",
         "batch_indices": rendered_indices,
         "roi_ids": roi_ids,
         "frame_indices": frame_indices,
         "ncc": ncc_values,
-        "panels": ["raw_tiff_adu", "corrected_camera_photon", "reconstruction", "absolute_residual"],
+        "display_scale": display_scale,
+        "panels": ["raw_tiff_adu", "corrected_camera_photon", "reconstruction_with_background", "absolute_residual_photon_domain"],
         "png_path": str(png_path.relative_to(layout.run_dir)),
     }
     path.mkdir(parents=True, exist_ok=True)
@@ -2607,12 +2726,26 @@ def _write_observed_photons_patch_recon_smoke(
     payload: Mapping[str, object],
     observed_frame: torch.Tensor,
     reconstruction: torch.Tensor,
+    background: torch.Tensor | None = None,
     layout,
 ) -> dict[str, object]:
     residual = observed_frame.detach().cpu().to(dtype=torch.float32) - reconstruction.detach().cpu().to(dtype=torch.float32)
     png_path = path / "observed_photons_patch_recon_smoke.png"
     summary_path = path / "observed_photons_patch_recon_summary.json"
-    _write_grayscale_png(png_path, _tile_frames_uint8([observed_frame, reconstruction, residual.abs()]))
+    display_scale = None
+    if background is not None:
+        display_scale = _background_anchored_display_scale([observed_frame, reconstruction], [background, background])
+        canvas = np.concatenate(
+            [
+                _to_uint8_background_anchored(observed_frame.detach().cpu(), background, display_scale),
+                _to_uint8_background_anchored(reconstruction.detach().cpu(), background, display_scale),
+                _to_uint8(residual.abs().detach().cpu()),
+            ],
+            axis=1,
+        )
+    else:
+        canvas = _tile_frames_uint8([observed_frame, reconstruction, residual.abs()])
+    _write_grayscale_png(png_path, canvas)
     summary = {
         "schema_version": "roi_gamma_observed_photons_patch_recon_smoke.v1",
         "epoch": int(payload.get("epoch", 0)),
@@ -2621,6 +2754,8 @@ def _write_observed_photons_patch_recon_smoke(
         "poisson_nll": _poisson_nll_value(observed_frame, reconstruction),
         "mse": float(residual.square().mean().item()),
         "ncc": _ncc_value(observed_frame, reconstruction),
+        "display_scale": display_scale,
+        "panels": ["corrected_camera_photon", "reconstruction_with_background", "absolute_residual"],
         "png_path": str(png_path.relative_to(layout.run_dir)),
     }
     path.mkdir(parents=True, exist_ok=True)
@@ -2737,9 +2872,30 @@ def _path_token(value: object) -> str:
     return token or "unknown"
 
 
-def _write_raw_vs_reconstruction_png(path: Path, *, raw_frame: torch.Tensor, reconstruction: torch.Tensor) -> None:
-    raw = _to_uint8(raw_frame.detach().cpu())
-    recon = _to_uint8(reconstruction.detach().cpu())
+def _write_raw_vs_reconstruction_png(
+    path: Path,
+    *,
+    raw_frame: torch.Tensor,
+    reconstruction: torch.Tensor,
+    background: torch.Tensor | None = None,
+    raw_is_photon: bool = True,
+) -> None:
+    if background is None:
+        raw = _to_uint8(raw_frame.detach().cpu())
+        recon = _to_uint8(reconstruction.detach().cpu())
+    else:
+        scale_frames = [reconstruction]
+        scale_backgrounds = [background]
+        if raw_is_photon:
+            scale_frames.append(raw_frame)
+            scale_backgrounds.append(background)
+        display_scale = _background_anchored_display_scale(scale_frames, scale_backgrounds)
+        raw = (
+            _to_uint8_background_anchored(raw_frame.detach().cpu(), background, display_scale)
+            if raw_is_photon
+            else _to_uint8(raw_frame.detach().cpu())
+        )
+        recon = _to_uint8_background_anchored(reconstruction.detach().cpu(), background, display_scale)
     canvas = np.concatenate([raw, recon], axis=1)
     _write_grayscale_png(path, canvas)
 
@@ -2751,6 +2907,48 @@ def _to_uint8(frame: torch.Tensor) -> np.ndarray:
     if high <= low:
         return np.zeros(array.shape, dtype=np.uint8)
     return np.clip((array - low) / (high - low) * 255.0, 0.0, 255.0).astype(np.uint8)
+
+
+def _background_anchored_display_scale(
+    frames: list[torch.Tensor],
+    backgrounds: list[torch.Tensor],
+    *,
+    bg_gray: int = 24,
+) -> dict[str, float | int | str]:
+    positive_signal: list[np.ndarray] = []
+    bg_values: list[float] = []
+    for frame, background in zip(frames, backgrounds, strict=False):
+        frame_array = torch.as_tensor(frame).detach().cpu().numpy().astype(np.float32)
+        bg_array = torch.as_tensor(background).detach().cpu().numpy().astype(np.float32)
+        if bg_array.shape != frame_array.shape:
+            bg_array = np.broadcast_to(bg_array, frame_array.shape)
+        bg_values.append(float(np.median(bg_array)))
+        signal = frame_array - bg_array
+        positive_signal.append(signal[signal > 0.0])
+    merged = np.concatenate([item for item in positive_signal if item.size > 0]) if any(item.size > 0 for item in positive_signal) else np.array([], dtype=np.float32)
+    signal_high = float(np.percentile(merged, 99.5)) if merged.size else 1.0
+    signal_high = max(signal_high, 1.0)
+    return {
+        "mode": "background_anchored",
+        "background_gray_uint8": int(bg_gray),
+        "background_reference_photon": float(np.median(bg_values)) if bg_values else 0.0,
+        "signal_high_photon": signal_high,
+    }
+
+
+def _to_uint8_background_anchored(
+    frame: torch.Tensor,
+    background: torch.Tensor,
+    display_scale: Mapping[str, object],
+) -> np.ndarray:
+    array = torch.as_tensor(frame).detach().cpu().numpy().astype(np.float32)
+    bg = torch.as_tensor(background).detach().cpu().numpy().astype(np.float32)
+    if bg.shape != array.shape:
+        bg = np.broadcast_to(bg, array.shape)
+    bg_gray = float(display_scale.get("background_gray_uint8", 24))
+    signal_high = max(float(display_scale.get("signal_high_photon", 1.0)), 1.0)
+    scaled = bg_gray + (array - bg) / signal_high * (255.0 - bg_gray)
+    return np.clip(scaled, 0.0, 255.0).astype(np.uint8)
 
 
 def _tile_frames_uint8(frames: list[torch.Tensor]) -> np.ndarray:

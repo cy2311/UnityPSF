@@ -74,6 +74,43 @@ python standard.py --submit
 
 The helper validates the resolved config before calling `sbatch`.
 
+## Multicolor Reconstruction
+
+The default v0.3 ratiometric multicolor reconstruction is a union-based raw
+ratio route, matching the validated Neptune-IWAE multicolor workflow:
+
+```text
+left infer set + right infer set -> union duplicate suppression -> raw TIFF left/right intensity -> ratio_right threshold -> two-color render
+```
+
+Key defaults:
+
+- Use the unfiltered `infer/predictions_merged.h5` outputs from both channels.
+- Union left/right emitter sets with `union_dist_px=2.0`.
+- For duplicate detections, keep the right-channel position, z, probability,
+  and localization precision.
+- Re-measure left/right intensity directly from the raw TIFF over the local
+  emitter coordinate, instead of using localization photon estimates.
+- Classify color with `ratio_right = I_right / (I_left + I_right)` and
+  `ratio_threshold=0.4`.
+- Render with right-priority localization precision and no locprec gate.
+
+Standard submission:
+
+```bash
+sbatch scripts/infer/run_3371_union_raw_ratio_bicolor.sbatch
+```
+
+Override the input sets when needed:
+
+```bash
+LEFT_PREDICTIONS=/path/to/left/infer/predictions_merged.h5 \
+RIGHT_PREDICTIONS=/path/to/right/infer/predictions_merged.h5 \
+SAMPLE_TIFF=/path/to/raw.ome.tif \
+RUN_NAME=my_union_raw_ratio_bicolor \
+sbatch scripts/infer/run_3371_union_raw_ratio_bicolor.sbatch
+```
+
 ## Current Scope
 
 Implemented:
@@ -88,6 +125,7 @@ Implemented:
 - ROI-bank HDF5 model, raw-TIFF harvesting, and posterior sampling.
 - Per-domain ROI-bank gamma updates with feedback coeff-map export.
 - Gamma monitor metrics, held-out loss monitoring, and diagnostic artifacts.
+- Union-based raw-TIFF ratiometric multicolor reconstruction.
 - Tests for config, runtime, localization, ROI bank, gamma update, peak, and training loop behavior.
 
 Out of scope for the public repository:

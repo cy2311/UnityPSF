@@ -84,8 +84,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--prob-threshold", type=float, default=0.70)
     parser.add_argument("--raw-th", type=float, default=0.5)
     parser.add_argument("--split-th", type=float, default=0.6)
-    parser.add_argument("--filter-prob-min", type=float, default=0.80)
-    parser.add_argument("--locprec-xy-nm-max", type=float, default=40.0)
+    parser.add_argument("--filter-prob-min", type=float, default=0.90)
+    parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
     parser.add_argument("--render-pixel-nm", type=float, default=10.0)
     parser.add_argument("--spot-radius-nm", type=float, default=45.0)
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
@@ -444,7 +444,9 @@ def run_side(
                 flush=True,
             )
 
-    filter_dir = side_dir / "filter_recon_prob080_locprec40"
+    prob_tag = f"prob{int(round(float(args.filter_prob_min) * 100)):03d}"
+    locprec_tag = "no_locprec" if args.locprec_xy_nm_max is None else f"locprec{int(round(float(args.locprec_xy_nm_max)))}"
+    filter_dir = side_dir / f"filter_recon_{prob_tag}_{locprec_tag}"
     filter_script = args.infer_recon_root / "filter" / "apply_filter_recon.py"
     if not filter_script.is_file():
         raise FileNotFoundError(filter_script)
@@ -464,11 +466,9 @@ def run_side(
         "--height-px",
         str(crop_height),
         "--filter-profile",
-        "strict",
+        "basic" if args.locprec_xy_nm_max is None else "strict",
         "--prob-min",
         str(args.filter_prob_min),
-        "--locprec-xy-nm-max",
-        str(args.locprec_xy_nm_max),
         "--render-pixel-nm",
         str(args.render_pixel_nm),
         "--spot-radius-nm",
@@ -485,6 +485,8 @@ def run_side(
         "h5",
         "--keep-filtered-predictions",
     ]
+    if args.locprec_xy_nm_max is not None:
+        cmd.extend(["--locprec-xy-nm-max", str(args.locprec_xy_nm_max)])
     subprocess.run(cmd, check=True)
     summary = {
         "side": side,

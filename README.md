@@ -33,46 +33,70 @@ output/         Training runs, checkpoints, metrics, figures, ROI banks.
 
 Those runtime directories are ignored by Git and should not be committed.
 
-## Quick Start
+## Standard End-to-End Entry
 
 ```bash
 cd neptune_v0.3
 python -m pip install -e ".[dev]"
 python -m pytest
-
-export NEPTUNE_V03_RAW_TIFF_PATH=/path/to/raw_tiff_or_stack_dir
-
-python -m neptune_v03.config.materialize \
-  --base configs/microtube_base.yaml \
-  --override configs/overrides/standard_roi_gamma.yaml \
-  --override configs/overrides/standard_roi_gamma_batch_budget.yaml \
-  --output .local/tmp/standard/resolved_standard_roi_gamma_batch_budget.yaml
-
-python standard.py --check
-python scripts/run_high_fidelity_dry_run.py
-python scripts/run_high_fidelity_dry_run.py \
-  --raw-tiff /path/to/raw_stack.tif \
-  --run-name real_tiff_smoke
-python -m neptune_v03.diagnostics.gamma_update_monitor --run-dir output/some_run
 ```
 
-The current default route is batch-budget based, not epoch-budget based:
+The current standard route is the 3371-style fast route:
 
-- 10,000 training batches by default.
-- ROI-bank gamma starts at batch 2,000.
-- Gamma updates run every 500 batches.
-- ROI size is 128 px in the default route.
-- Posterior sampling uses 25 samples per posterior group.
-- Gamma optimization uses 100 Adam steps at learning rate 0.025.
-- Held-out ROI loss is monitored, not used as a hard rejection gate.
+```text
+raw TIFF
+  -> high-quality left/right initial zmap from raw TIFF
+  -> fast-route training
+  -> left channel infer/filter/recon
+  -> right channel infer/filter/recon
+  -> union raw-ratio dual-channel reconstruction
+```
 
-The SLURM helper is:
+Submit the full standard pipeline:
 
 ```bash
-python standard.py --submit
+export NEPTUNE_V03_RAW_TIFF_PATH=/path/to/raw_stack.ome.tif
+bash run_standard_pipeline.sh
 ```
 
-The helper validates the resolved config before calling `sbatch`.
+Default training settings:
+
+- ROI/input size: 96 x 96.
+- PSF patch: 25 x 25.
+- Epoch route: 300 epochs, batch size 24, 417 steps per epoch.
+- LR schedule: 3052 parity, StepLR with step size 10 epochs and gamma 0.9.
+- Physical update: start epoch 30, every 5 epochs.
+- Physical update target: 5000 projected emitters.
+- Initial physical model: freshly recomputed high-quality left/right zmap from raw TIFF.
+- Fast route: global-field LUT, LUT epoch prewarm, cached window, fused projection.
+
+Default infer/recon settings:
+
+- Full raw TIFF inference up to 8000 frames.
+- ROI/input size: 96 x 96.
+- Valid core: 80 x 80.
+- Cut edge: 8 px.
+- Input preprocessing: FD-DeepLoc-style recenter.
+- Final filter/recon: probability >= 0.9, no localization-precision gate.
+
+The pipeline submits dependent SLURM jobs and prints the training run directory
+and final left, right, and dual-channel output directories. To run infer/recon
+from an existing completed training run:
+
+```bash
+PIPELINE_MODE=infer_only \
+RUN_DIR=/path/to/output/<run_tag>/<run_name_jobid> \
+bash run_standard_pipeline.sh
+```
+
+Low-level training scripts remain available for controlled experiments:
+
+```bash
+sbatch train_standard_3367_hqzmap.sh
+sbatch train_standard_3367.sh
+sbatch train_standard_3367_peakbootstrap.sh
+python standard.py --check
+```
 
 ## Multicolor Reconstruction
 

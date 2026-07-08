@@ -16,21 +16,21 @@ from neptune_iwae.zmap_main.pipeline_presets import build_zmap_preset
 from neptune_iwae.zmap_main.real_nat_diagnostics import RealNATDiagnosticsConfig, run_real_nat_diagnostics
 
 
-SUPPORTED_ZMAP_SAMPLES = {"microtube", "microtubule", "paint", "ncp"}
+SUPPORTED_ZMAP_SAMPLES = {"microtube", "microtubule", "paint", "ncp", "dynamin", "membrane"}
 
 
 def infer_zmap_sample_kind_from_path(path: Path) -> str | None:
     text = str(path).lower()
+    if "dynamin" in text:
+        return "dynamin"
+    if "membrane" in text:
+        return "membrane"
     if "ncp" in text:
         return "ncp"
     if "paint" in text or "lh1" in text:
         return "paint"
     if "microtube" in text or "spool_800mw" in text or "3d_7_1" in text:
         return "microtube"
-    if "dynamin" in text:
-        return "dynamin"
-    if "membrane" in text:
-        return "membrane"
     return None
 
 
@@ -38,11 +38,6 @@ def validate_zmap_sample_kind_for_tiff(sample: str, raw_tiff: Path) -> None:
     sample_norm = str(sample).strip().lower()
     inferred = infer_zmap_sample_kind_from_path(raw_tiff)
     if sample_norm not in SUPPORTED_ZMAP_SAMPLES:
-        if sample_norm in {"dynamin", "membrane"}:
-            raise ValueError(
-                f"ZMAP_SAMPLE_KIND={sample_norm!r} was inferred from the raw TIFF path, but no dedicated "
-                f"high-quality zmap preset exists for {sample_norm} yet. Refusing to silently use another preset."
-            )
         raise ValueError(
             f"Unsupported ZMAP_SAMPLE_KIND={sample_norm!r}. Supported high-quality zmap presets are: "
             f"{', '.join(sorted(SUPPORTED_ZMAP_SAMPLES))}."

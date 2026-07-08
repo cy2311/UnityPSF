@@ -33,16 +33,16 @@ PIPELINE_TAG="${PIPELINE_TAG:-standard_v03_$(date +%Y%m%d_%H%M%S)}"
 infer_zmap_sample_kind_from_path() {
   local path_lc
   path_lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$path_lc" == *"ncp"* ]]; then
+  if [[ "$path_lc" == *"dynamin"* ]]; then
+    printf 'dynamin'
+  elif [[ "$path_lc" == *"membrane"* ]]; then
+    printf 'membrane'
+  elif [[ "$path_lc" == *"ncp"* ]]; then
     printf 'ncp'
   elif [[ "$path_lc" == *"paint"* || "$path_lc" == *"lh1"* ]]; then
     printf 'paint'
   elif [[ "$path_lc" == *"microtube"* || "$path_lc" == *"spool_800mw"* || "$path_lc" == *"3d_7_1"* ]]; then
     printf 'microtube'
-  elif [[ "$path_lc" == *"dynamin"* ]]; then
-    printf 'dynamin'
-  elif [[ "$path_lc" == *"membrane"* ]]; then
-    printf 'membrane'
   else
     printf ''
   fi
@@ -59,14 +59,9 @@ if [[ -n "$INFERRED_ZMAP_SAMPLE_KIND" && "$INFERRED_ZMAP_SAMPLE_KIND" != "$ZMAP_
   exit 2
 fi
 case "$ZMAP_SAMPLE_KIND" in
-  microtube|microtubule|paint|ncp) ;;
-  dynamin|membrane)
-    echo "ZMAP_SAMPLE_KIND=$ZMAP_SAMPLE_KIND was inferred from SAMPLE_TIFF, but no dedicated high-quality zmap preset exists for it yet." >&2
-    echo "Refusing to submit a pipeline that would silently use the wrong initial-zmap preset." >&2
-    exit 2
-    ;;
+  microtube|microtubule|paint|ncp|dynamin|membrane) ;;
   *)
-    echo "Unsupported ZMAP_SAMPLE_KIND=$ZMAP_SAMPLE_KIND. Supported high-quality zmap presets are: microtube, paint, ncp." >&2
+    echo "Unsupported ZMAP_SAMPLE_KIND=$ZMAP_SAMPLE_KIND. Supported high-quality zmap presets are: microtube, paint, ncp, dynamin, membrane." >&2
     exit 2
     ;;
 esac

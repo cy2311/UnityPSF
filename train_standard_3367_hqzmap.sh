@@ -77,16 +77,16 @@ export HQ_BASELINE_FRAME_STOP="${HQ_BASELINE_FRAME_STOP:-100}"
 infer_zmap_sample_kind_from_path() {
   local path_lc
   path_lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
-  if [[ "$path_lc" == *"ncp"* ]]; then
+  if [[ "$path_lc" == *"dynamin"* ]]; then
+    printf 'dynamin'
+  elif [[ "$path_lc" == *"membrane"* ]]; then
+    printf 'membrane'
+  elif [[ "$path_lc" == *"ncp"* ]]; then
     printf 'ncp'
   elif [[ "$path_lc" == *"paint"* || "$path_lc" == *"lh1"* ]]; then
     printf 'paint'
   elif [[ "$path_lc" == *"microtube"* || "$path_lc" == *"spool_800mw"* || "$path_lc" == *"3d_7_1"* ]]; then
     printf 'microtube'
-  elif [[ "$path_lc" == *"dynamin"* ]]; then
-    printf 'dynamin'
-  elif [[ "$path_lc" == *"membrane"* ]]; then
-    printf 'membrane'
   else
     printf ''
   fi
@@ -94,14 +94,9 @@ infer_zmap_sample_kind_from_path() {
 
 validate_supported_zmap_sample_kind() {
   case "$1" in
-    microtube|microtubule|paint|ncp) ;;
-    dynamin|membrane)
-      echo "ZMAP_SAMPLE_KIND=$1 was inferred from the raw TIFF path, but no dedicated high-quality zmap preset exists for $1 yet. Refusing to silently use the microtube preset." >&2
-      echo "Add a $1 preset in neptune_iwae/zmap_main/pipeline_presets.py, or explicitly choose a supported preset after validating it." >&2
-      exit 2
-      ;;
+    microtube|microtubule|paint|ncp|dynamin|membrane) ;;
     *)
-      echo "Unsupported ZMAP_SAMPLE_KIND=$1. Supported high-quality zmap presets are: microtube, paint, ncp." >&2
+      echo "Unsupported ZMAP_SAMPLE_KIND=$1. Supported high-quality zmap presets are: microtube, paint, ncp, dynamin, membrane." >&2
       exit 2
       ;;
   esac

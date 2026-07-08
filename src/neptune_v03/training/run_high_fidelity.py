@@ -877,27 +877,53 @@ def _export_gamma_feedback_coeff_maps(
     global_step: int,
     artifact_policy: str = "per_update",
 ) -> tuple[tuple[str, str], ...]:
-    after_stack = full_roi_coeff_stack_torch(
-        gamma.detach().to(device=objective.device, dtype=torch.float32),
-        objective.nat_config,
-        dtype=torch.float32,
-        device=objective.device,
-    )
+    gamma_t = gamma.detach().to(device=objective.device, dtype=torch.float32)
     before_gamma = torch.zeros_like(gamma.detach()) if gamma_before is None else gamma_before.detach()
-    before_stack = full_roi_coeff_stack_torch(
-        before_gamma.to(device=objective.device, dtype=torch.float32),
-        objective.nat_config,
-        dtype=torch.float32,
-        device=objective.device,
-    )
-    delta_maps = after_stack.maps_nm - before_stack.maps_nm
+    before_gamma_t = before_gamma.to(device=objective.device, dtype=torch.float32)
+    delta_cache: dict[tuple[int, int], torch.Tensor] = {}
+    mode_order: list[tuple[int, int]] | None = None
     output: list[tuple[str, str]] = []
-    domains = objective.base_maps_by_domain or {"default": torch.zeros_like(delta_maps)}
+    domains = objective.base_maps_by_domain
+    if not domains:
+        default_shape = (int(objective.nat_config.img_size_y), int(objective.nat_config.img_size_x))
+        domains = {"default": torch.zeros((len(objective.nat_config.aberrations), *default_shape), device=objective.device)}
     if domain_names is not None:
         wanted = {str(name) for name in domain_names}
         domains = {name: maps for name, maps in domains.items() if str(name) in wanted}
     for domain_name, base_maps in domains.items():
-        maps = (base_maps.to(device=objective.device, dtype=torch.float32) + delta_maps).detach().cpu().numpy()
+        base_maps_t = base_maps.to(device=objective.device, dtype=torch.float32)
+        if base_maps_t.ndim != 3:
+            raise ValueError(f"base coeff maps for domain {domain_name!r} must have shape (C,H,W), got {tuple(base_maps_t.shape)}")
+        if int(base_maps_t.shape[0]) != len(objective.nat_config.aberrations):
+            raise ValueError(
+                f"base coeff maps for domain {domain_name!r} have {int(base_maps_t.shape[0])} modes, "
+                f"expected {len(objective.nat_config.aberrations)}"
+            )
+        shape_hw = (int(base_maps_t.shape[1]), int(base_maps_t.shape[2]))
+        delta_maps = delta_cache.get(shape_hw)
+        if delta_maps is None:
+            domain_nat_config = replace(
+                objective.nat_config,
+                img_size_y=int(shape_hw[0]),
+                img_size_x=int(shape_hw[1]),
+            )
+            after_stack = full_roi_coeff_stack_torch(
+                gamma_t,
+                domain_nat_config,
+                dtype=torch.float32,
+                device=objective.device,
+            )
+            before_stack = full_roi_coeff_stack_torch(
+                before_gamma_t,
+                domain_nat_config,
+                dtype=torch.float32,
+                device=objective.device,
+            )
+            delta_maps = after_stack.maps_nm - before_stack.maps_nm
+            delta_cache[shape_hw] = delta_maps
+            if mode_order is None:
+                mode_order = after_stack.mode_order
+        maps = (base_maps_t + delta_maps).detach().cpu().numpy()
         if str(artifact_policy).lower() in {"compact", "compact_latest", "latest"}:
             path = (
                 layout.artifacts_dir
@@ -920,7 +946,7 @@ def _export_gamma_feedback_coeff_maps(
         np.savez_compressed(
             path,
             zernike_maps_nm=maps.astype(np.float32),
-            mode_order=np.asarray(after_stack.mode_order, dtype=np.int64),
+            mode_order=np.asarray(mode_order or list(objective.nat_config.aberrations), dtype=np.int64),
             gamma_delta_abs_max_nm=np.asarray(float(delta_maps.detach().abs().max().cpu().item()), dtype=np.float32),
             gamma_delta_abs_mean_nm=np.asarray(float(delta_maps.detach().abs().mean().cpu().item()), dtype=np.float32),
         )

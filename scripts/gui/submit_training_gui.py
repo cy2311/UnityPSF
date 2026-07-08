@@ -23,8 +23,16 @@ except ImportError:  # pragma: no cover - GUI remains usable without preview.
 ROOT = Path("/home/guest/Others/main/race")
 NEPTUNE_DIR = ROOT / "neptune_v0.3"
 DEFAULT_RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
+TRAINING_SETS_DIR = ROOT / "datasets/training_sets"
 TRAIN_SCRIPT = NEPTUNE_DIR / "train_standard_3367_hqzmap.sh"
-SUPPORTED_ZMAP_SAMPLES = ("microtube", "paint", "ncp")
+SUPPORTED_ZMAP_SAMPLES = ("microtube", "paint", "ncp", "dynamin", "membrane")
+KNOWN_SAMPLE_PATHS = {
+    "microtube default": DEFAULT_RAW_TIFF,
+    "dynamin_3d_5_1": TRAINING_SETS_DIR / "dynamin_3d_5_1",
+    "membrane_3d_4_1": TRAINING_SETS_DIR / "membrane_3d_4_1",
+    "ncp_3d_500mw_1_1": TRAINING_SETS_DIR / "ncp_3d_500mw_1_1",
+    "paint_3d_lh1": TRAINING_SETS_DIR / "paint_3d_lh1",
+}
 
 
 @dataclass(frozen=True)
@@ -73,16 +81,16 @@ def _resolve_tiff_path(path_text: str) -> Path:
 
 def infer_zmap_sample_kind_from_path(path: Path) -> str | None:
     text = str(path).lower()
+    if "dynamin" in text:
+        return "dynamin"
+    if "membrane" in text:
+        return "membrane"
     if "ncp" in text:
         return "ncp"
     if "paint" in text or "lh1" in text:
         return "paint"
     if "microtube" in text or "spool_800mw" in text or "3d_7_1" in text:
         return "microtube"
-    if "dynamin" in text:
-        return "dynamin"
-    if "membrane" in text:
-        return "membrane"
     return None
 
 
@@ -95,11 +103,6 @@ def validate_zmap_sample_kind_for_tiff(sample: str, raw_tiff: Path) -> None:
             f"{', '.join(SUPPORTED_ZMAP_SAMPLES)}."
         )
     if inferred is not None and inferred != sample_norm:
-        if inferred in {"dynamin", "membrane"}:
-            raise ValueError(
-                f"The raw TIFF path looks like {inferred!r}, but Neptune v0.3 does not have a dedicated "
-                f"high-quality zmap preset for {inferred} yet. Refusing to silently use {sample_norm!r}."
-            )
         raise ValueError(
             f"The raw TIFF path looks like {inferred!r}, but sample kind is {sample_norm!r}. "
             f"Refusing to submit with a mismatched initial-zmap preset."
@@ -262,6 +265,8 @@ class SubmitTrainingGUI:
 
         self.vars: dict[str, tk.StringVar] = {
             "raw_tiff": tk.StringVar(value=str(DEFAULT_RAW_TIFF)),
+            "sample_path": tk.StringVar(value=str(DEFAULT_RAW_TIFF)),
+            "known_sample": tk.StringVar(value="microtube default"),
             "channel_mode": tk.StringVar(value="dual"),
             "crop_preset": tk.StringVar(value="full"),
             "zmap_sample_kind": tk.StringVar(value="microtube"),
@@ -323,10 +328,21 @@ class SubmitTrainingGUI:
         box = ttk.LabelFrame(parent, text="Dataset / TIFF", padding=8)
         box.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         box.columnconfigure(1, weight=1)
-        ttk.Label(box, text="Raw TIFF").grid(row=0, column=0, sticky="w")
-        ttk.Entry(box, textvariable=self.vars["raw_tiff"], width=58).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(box, text="Browse", command=self._browse_tiff).grid(row=0, column=2)
-        ttk.Button(box, text="Load Preview", command=self._load_tiff).grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(box, text="Known sample").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(
+            box,
+            textvariable=self.vars["known_sample"],
+            values=tuple(KNOWN_SAMPLE_PATHS.keys()),
+            width=24,
+            state="readonly",
+        ).grid(row=0, column=1, sticky="w", padx=4)
+        ttk.Button(box, text="Use", command=self._use_known_sample).grid(row=0, column=2)
+        ttk.Label(box, text="Sample path").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(box, textvariable=self.vars["sample_path"], width=58).grid(row=1, column=1, sticky="ew", padx=4, pady=(6, 0))
+        ttk.Button(box, text="Select Path", command=self._browse_sample_path).grid(row=1, column=2, pady=(6, 0))
+        ttk.Label(box, text="Raw TIFF").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(box, textvariable=self.vars["raw_tiff"], width=58).grid(row=2, column=1, sticky="ew", padx=4, pady=(6, 0))
+        ttk.Button(box, text="Load Preview", command=self._load_tiff).grid(row=3, column=1, sticky="w", pady=(6, 0))
 
     def _channel_section(self, parent: ttk.Frame) -> None:
         box = ttk.LabelFrame(parent, text="Channel Mode", padding=8)
@@ -406,13 +422,40 @@ class SubmitTrainingGUI:
             filetypes=(("TIFF", "*.tif *.tiff *.ome.tif *.ome.tiff"), ("All files", "*")),
         )
         if selected:
+            self.vars["sample_path"].set(selected)
             self.vars["raw_tiff"].set(selected)
             self._load_tiff()
+
+    def _browse_sample_path(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Select sample TIFF or symlink",
+            initialdir=str(TRAINING_SETS_DIR if TRAINING_SETS_DIR.exists() else ROOT),
+            filetypes=(("TIFF / symlink", "*.tif *.tiff *.ome.tif *.ome.tiff *"), ("All files", "*")),
+        )
+        if not selected:
+            selected_dir = filedialog.askdirectory(
+                title="Select sample directory",
+                initialdir=str(TRAINING_SETS_DIR if TRAINING_SETS_DIR.exists() else ROOT),
+            )
+            selected = selected_dir
+        if selected:
+            self.vars["sample_path"].set(selected)
+            self.vars["raw_tiff"].set(selected)
+            self._load_tiff()
+
+    def _use_known_sample(self) -> None:
+        path = KNOWN_SAMPLE_PATHS.get(self.vars["known_sample"].get())
+        if path is None:
+            return
+        self.vars["sample_path"].set(str(path))
+        self.vars["raw_tiff"].set(str(path))
+        self._load_tiff()
 
     def _load_tiff(self) -> None:
         try:
             path = _resolve_tiff_path(self.vars["raw_tiff"].get())
             self.vars["raw_tiff"].set(str(path))
+            self.vars["sample_path"].set(str(path))
             self.frame_shape, self.first_frame = _read_tiff_info(path)
             frames, height, width = self.frame_shape
             inferred = infer_zmap_sample_kind_from_path(path)
@@ -423,9 +466,9 @@ class SubmitTrainingGUI:
                 elif self.vars["crop_preset"].get() != "custom":
                     self.vars["crop_preset"].set("full")
             elif inferred in {"dynamin", "membrane"}:
-                self.status_var.set(
-                    f"Warning: {inferred} path detected, but no dedicated zmap preset exists yet. Submission will be blocked."
-                )
+                self.vars["zmap_sample_kind"].set(inferred)
+                if self.vars["crop_preset"].get() != "custom":
+                    self.vars["crop_preset"].set("full")
             self.info_var.set(f"TIFF: {frames} frames, {height} x {width} px | {path}")
             if self.vars["crop_preset"].get() != "custom":
                 self._apply_crop_preset()

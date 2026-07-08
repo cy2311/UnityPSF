@@ -74,6 +74,102 @@ export HQ_BASELINE_PERCENTILE="${HQ_BASELINE_PERCENTILE:-1.0}"
 export HQ_BASELINE_FRAME_START="${HQ_BASELINE_FRAME_START:-0}"
 export HQ_BASELINE_FRAME_STOP="${HQ_BASELINE_FRAME_STOP:-100}"
 
+infer_zmap_sample_kind_from_path() {
+  local path_lc
+  path_lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$path_lc" == *"ncp"* ]]; then
+    printf 'ncp'
+  elif [[ "$path_lc" == *"paint"* || "$path_lc" == *"lh1"* ]]; then
+    printf 'paint'
+  elif [[ "$path_lc" == *"microtube"* || "$path_lc" == *"spool_800mw"* || "$path_lc" == *"3d_7_1"* ]]; then
+    printf 'microtube'
+  elif [[ "$path_lc" == *"dynamin"* ]]; then
+    printf 'dynamin'
+  elif [[ "$path_lc" == *"membrane"* ]]; then
+    printf 'membrane'
+  else
+    printf ''
+  fi
+}
+
+validate_supported_zmap_sample_kind() {
+  case "$1" in
+    microtube|microtubule|paint|ncp) ;;
+    dynamin|membrane)
+      echo "ZMAP_SAMPLE_KIND=$1 was inferred from the raw TIFF path, but no dedicated high-quality zmap preset exists for $1 yet. Refusing to silently use the microtube preset." >&2
+      echo "Add a $1 preset in neptune_iwae/zmap_main/pipeline_presets.py, or explicitly choose a supported preset after validating it." >&2
+      exit 2
+      ;;
+    *)
+      echo "Unsupported ZMAP_SAMPLE_KIND=$1. Supported high-quality zmap presets are: microtube, paint, ncp." >&2
+      exit 2
+      ;;
+  esac
+}
+
+INFERRED_ZMAP_SAMPLE_KIND="$(infer_zmap_sample_kind_from_path "$NEPTUNE_V03_RAW_TIFF_PATH")"
+if [[ -z "${ZMAP_SAMPLE_KIND+x}" || -z "${ZMAP_SAMPLE_KIND}" ]]; then
+  export ZMAP_SAMPLE_KIND="${INFERRED_ZMAP_SAMPLE_KIND:-microtube}"
+else
+  export ZMAP_SAMPLE_KIND
+fi
+if [[ -n "$INFERRED_ZMAP_SAMPLE_KIND" && "$INFERRED_ZMAP_SAMPLE_KIND" != "$ZMAP_SAMPLE_KIND" ]]; then
+  echo "Raw TIFF path appears to be sample kind '$INFERRED_ZMAP_SAMPLE_KIND', but ZMAP_SAMPLE_KIND='$ZMAP_SAMPLE_KIND'." >&2
+  echo "Refusing to submit because this would build an initial zmap with the wrong preset." >&2
+  echo "raw_tiff=${NEPTUNE_V03_RAW_TIFF_PATH}" >&2
+  exit 2
+fi
+validate_supported_zmap_sample_kind "$ZMAP_SAMPLE_KIND"
+
+export HQ_LEFT_CROP_X0="${HQ_LEFT_CROP_X0:-}"
+export HQ_LEFT_CROP_X1="${HQ_LEFT_CROP_X1:-}"
+export HQ_RIGHT_CROP_X0="${HQ_RIGHT_CROP_X0:-}"
+export HQ_RIGHT_CROP_X1="${HQ_RIGHT_CROP_X1:-}"
+export HQ_CROP_Y0="${HQ_CROP_Y0:-}"
+export HQ_CROP_Y1="${HQ_CROP_Y1:-}"
+export HQ_LEFT_ROI_X_MIN_PX="${HQ_LEFT_ROI_X_MIN_PX:-}"
+export HQ_LEFT_ROI_X_MAX_PX="${HQ_LEFT_ROI_X_MAX_PX:-}"
+export HQ_RIGHT_ROI_X_MIN_PX="${HQ_RIGHT_ROI_X_MIN_PX:-}"
+export HQ_RIGHT_ROI_X_MAX_PX="${HQ_RIGHT_ROI_X_MAX_PX:-}"
+export HQ_ROI_Y_MIN_PX="${HQ_ROI_Y_MIN_PX:-}"
+export HQ_ROI_Y_MAX_PX="${HQ_ROI_Y_MAX_PX:-}"
+
+if [[ "${ZMAP_SAMPLE_KIND:-microtube}" == "ncp" ]]; then
+  export LEFT_DOMAIN_CROP_LEFT="${LEFT_DOMAIN_CROP_LEFT:-100}"
+  export LEFT_DOMAIN_CROP_TOP="${LEFT_DOMAIN_CROP_TOP:-400}"
+  export LEFT_DOMAIN_CROP_WIDTH="${LEFT_DOMAIN_CROP_WIDTH:-400}"
+  export LEFT_DOMAIN_CROP_HEIGHT="${LEFT_DOMAIN_CROP_HEIGHT:-400}"
+  export RIGHT_DOMAIN_CROP_LEFT="${RIGHT_DOMAIN_CROP_LEFT:-700}"
+  export RIGHT_DOMAIN_CROP_TOP="${RIGHT_DOMAIN_CROP_TOP:-400}"
+  export RIGHT_DOMAIN_CROP_WIDTH="${RIGHT_DOMAIN_CROP_WIDTH:-400}"
+  export RIGHT_DOMAIN_CROP_HEIGHT="${RIGHT_DOMAIN_CROP_HEIGHT:-400}"
+else
+  export LEFT_DOMAIN_CROP_LEFT="${LEFT_DOMAIN_CROP_LEFT:-0}"
+  export LEFT_DOMAIN_CROP_TOP="${LEFT_DOMAIN_CROP_TOP:-0}"
+  export LEFT_DOMAIN_CROP_WIDTH="${LEFT_DOMAIN_CROP_WIDTH:-600}"
+  export LEFT_DOMAIN_CROP_HEIGHT="${LEFT_DOMAIN_CROP_HEIGHT:-1200}"
+  export RIGHT_DOMAIN_CROP_LEFT="${RIGHT_DOMAIN_CROP_LEFT:-600}"
+  export RIGHT_DOMAIN_CROP_TOP="${RIGHT_DOMAIN_CROP_TOP:-0}"
+  export RIGHT_DOMAIN_CROP_WIDTH="${RIGHT_DOMAIN_CROP_WIDTH:-600}"
+  export RIGHT_DOMAIN_CROP_HEIGHT="${RIGHT_DOMAIN_CROP_HEIGHT:-1200}"
+fi
+if [[ "$LEFT_DOMAIN_CROP_TOP" -ne "$RIGHT_DOMAIN_CROP_TOP" || "$LEFT_DOMAIN_CROP_HEIGHT" -ne "$RIGHT_DOMAIN_CROP_HEIGHT" ]]; then
+  echo "HQ bootstrap currently requires matching left/right y-domain crops; got left top/height ${LEFT_DOMAIN_CROP_TOP}/${LEFT_DOMAIN_CROP_HEIGHT}, right top/height ${RIGHT_DOMAIN_CROP_TOP}/${RIGHT_DOMAIN_CROP_HEIGHT}" >&2
+  exit 2
+fi
+export HQ_LEFT_CROP_X0="${HQ_LEFT_CROP_X0:-$LEFT_DOMAIN_CROP_LEFT}"
+export HQ_LEFT_CROP_X1="${HQ_LEFT_CROP_X1:-$((LEFT_DOMAIN_CROP_LEFT + LEFT_DOMAIN_CROP_WIDTH))}"
+export HQ_RIGHT_CROP_X0="${HQ_RIGHT_CROP_X0:-$RIGHT_DOMAIN_CROP_LEFT}"
+export HQ_RIGHT_CROP_X1="${HQ_RIGHT_CROP_X1:-$((RIGHT_DOMAIN_CROP_LEFT + RIGHT_DOMAIN_CROP_WIDTH))}"
+export HQ_CROP_Y0="${HQ_CROP_Y0:-$LEFT_DOMAIN_CROP_TOP}"
+export HQ_CROP_Y1="${HQ_CROP_Y1:-$((LEFT_DOMAIN_CROP_TOP + LEFT_DOMAIN_CROP_HEIGHT))}"
+export HQ_LEFT_ROI_X_MIN_PX="${HQ_LEFT_ROI_X_MIN_PX:-$HQ_LEFT_CROP_X0}"
+export HQ_LEFT_ROI_X_MAX_PX="${HQ_LEFT_ROI_X_MAX_PX:-$HQ_LEFT_CROP_X1}"
+export HQ_RIGHT_ROI_X_MIN_PX="${HQ_RIGHT_ROI_X_MIN_PX:-$HQ_RIGHT_CROP_X0}"
+export HQ_RIGHT_ROI_X_MAX_PX="${HQ_RIGHT_ROI_X_MAX_PX:-$HQ_RIGHT_CROP_X1}"
+export HQ_ROI_Y_MIN_PX="${HQ_ROI_Y_MIN_PX:-$HQ_CROP_Y0}"
+export HQ_ROI_Y_MAX_PX="${HQ_ROI_Y_MAX_PX:-$HQ_CROP_Y1}"
+
 export LR_STEP_UNIT="${LR_STEP_UNIT:-epoch}"
 export LR_STEP_SIZE="${LR_STEP_SIZE:-10}"
 export LR_GAMMA="${LR_GAMMA:-0.9}"
@@ -92,7 +188,7 @@ if [[ -n "$HQ_SPATIAL_BALANCE_GRID_PX" ]]; then
     HQ_BALANCE_TAG="${HQ_BALANCE_TAG}_mincell${HQ_SPATIAL_BALANCE_MIN_PER_CELL}"
   fi
 fi
-HQ_RUN_TAG="microtube_formal_order2_frame1000_emit${HQ_MAX_EMITTERS}_round${HQ_ALTERNATING_ROUNDS}_p1baseline${HQ_BALANCE_TAG}_recomputed_${JOB_SUFFIX}"
+HQ_RUN_TAG="${ZMAP_SAMPLE_KIND}_formal_order2_frame1000_emit${HQ_MAX_EMITTERS}_round${HQ_ALTERNATING_ROUNDS}_p1baseline${HQ_BALANCE_TAG}_recomputed_${JOB_SUFFIX}"
 HQ_ZMAP_ROOT="$NEPTUNE_DIR/output/high_quality_initial_zmap/$HQ_RUN_TAG"
 export ZMAP_LEFT="$HQ_ZMAP_ROOT/left/export_nat_zmap/alternating_full_roi_zernike_maps_nm.npz"
 export ZMAP_RIGHT="$HQ_ZMAP_ROOT/right/export_nat_zmap/alternating_full_roi_zernike_maps_nm.npz"
@@ -106,8 +202,11 @@ echo "job_id=${SLURM_JOB_ID:-local}"
 echo "node=${SLURMD_NODENAME:-$(hostname)}"
 echo "stage1=high_quality_initial_zmap_from_scratch"
 echo "raw_tiff=${NEPTUNE_V03_RAW_TIFF_PATH}"
+echo "inferred_zmap_sample_kind=${INFERRED_ZMAP_SAMPLE_KIND:-unknown}"
+echo "zmap_sample_kind=${ZMAP_SAMPLE_KIND}"
 echo "hq_zmap_root=${HQ_ZMAP_ROOT}"
-echo "hq_settings=max_emitters=${HQ_MAX_EMITTERS} alternating_rounds=${HQ_ALTERNATING_ROUNDS} local_steps=${HQ_ALTERNATING_LOCAL_STEPS} global_steps=${HQ_ALTERNATING_GLOBAL_STEPS} baseline=per_channel_p${HQ_BASELINE_PERCENTILE}_frames_${HQ_BASELINE_FRAME_START}_${HQ_BASELINE_FRAME_STOP} roi_stride_aligned_grid_px=${HQ_SPATIAL_BALANCE_GRID_PX} spatial_balance_min_per_cell=${HQ_SPATIAL_BALANCE_MIN_PER_CELL} spatial_balance_max_per_cell=${HQ_SPATIAL_BALANCE_MAX_PER_CELL} selection_pool_multiplier=${HQ_SELECTION_POOL_MULTIPLIER} left_right_parallel=1 parallel_mode=${HQ_ZMAP_PARALLEL_MODE}"
+echo "hq_settings=sample=${ZMAP_SAMPLE_KIND} max_emitters=${HQ_MAX_EMITTERS} alternating_rounds=${HQ_ALTERNATING_ROUNDS} local_steps=${HQ_ALTERNATING_LOCAL_STEPS} global_steps=${HQ_ALTERNATING_GLOBAL_STEPS} baseline=per_channel_p${HQ_BASELINE_PERCENTILE}_frames_${HQ_BASELINE_FRAME_START}_${HQ_BASELINE_FRAME_STOP} roi_stride_aligned_grid_px=${HQ_SPATIAL_BALANCE_GRID_PX} spatial_balance_min_per_cell=${HQ_SPATIAL_BALANCE_MIN_PER_CELL} spatial_balance_max_per_cell=${HQ_SPATIAL_BALANCE_MAX_PER_CELL} selection_pool_multiplier=${HQ_SELECTION_POOL_MULTIPLIER} left_right_parallel=1 parallel_mode=${HQ_ZMAP_PARALLEL_MODE} left_crop_x=${HQ_LEFT_CROP_X0}:${HQ_LEFT_CROP_X1} right_crop_x=${HQ_RIGHT_CROP_X0}:${HQ_RIGHT_CROP_X1} crop_y=${HQ_CROP_Y0}:${HQ_CROP_Y1}"
+echo "training_domain_crops=left:${LEFT_DOMAIN_CROP_LEFT},${LEFT_DOMAIN_CROP_TOP},${LEFT_DOMAIN_CROP_WIDTH},${LEFT_DOMAIN_CROP_HEIGHT} right:${RIGHT_DOMAIN_CROP_LEFT},${RIGHT_DOMAIN_CROP_TOP},${RIGHT_DOMAIN_CROP_WIDTH},${RIGHT_DOMAIN_CROP_HEIGHT}"
 echo "stage2_run_tag=${RUN_TAG}"
 
 export PYTHONPATH="$ROOT:$NEPTUNE_DIR/src"
@@ -124,6 +223,7 @@ left_hq_args=(
   --run-root "$HQ_ZMAP_ROOT/left"
   --repo-root "$ROOT"
   --raw-tiff "$NEPTUNE_V03_RAW_TIFF_PATH"
+  --zmap-sample "$ZMAP_SAMPLE_KIND"
   --device "$left_device"
   --max-emitters "$HQ_MAX_EMITTERS"
   --alternating-rounds "$HQ_ALTERNATING_ROUNDS"
@@ -139,6 +239,7 @@ right_hq_args=(
   --run-root "$HQ_ZMAP_ROOT/right"
   --repo-root "$ROOT"
   --raw-tiff "$NEPTUNE_V03_RAW_TIFF_PATH"
+  --zmap-sample "$ZMAP_SAMPLE_KIND"
   --device "$right_device"
   --max-emitters "$HQ_MAX_EMITTERS"
   --alternating-rounds "$HQ_ALTERNATING_ROUNDS"
@@ -160,6 +261,46 @@ fi
 if [[ -n "$HQ_SPATIAL_BALANCE_MAX_PER_CELL" ]]; then
   left_hq_args+=(--spatial-balance-max-per-cell "$HQ_SPATIAL_BALANCE_MAX_PER_CELL")
   right_hq_args+=(--spatial-balance-max-per-cell "$HQ_SPATIAL_BALANCE_MAX_PER_CELL")
+fi
+if [[ -n "$HQ_LEFT_CROP_X0" ]]; then
+  left_hq_args+=(--crop-x0 "$HQ_LEFT_CROP_X0")
+fi
+if [[ -n "$HQ_LEFT_CROP_X1" ]]; then
+  left_hq_args+=(--crop-x1 "$HQ_LEFT_CROP_X1")
+fi
+if [[ -n "$HQ_RIGHT_CROP_X0" ]]; then
+  right_hq_args+=(--crop-x0 "$HQ_RIGHT_CROP_X0")
+fi
+if [[ -n "$HQ_RIGHT_CROP_X1" ]]; then
+  right_hq_args+=(--crop-x1 "$HQ_RIGHT_CROP_X1")
+fi
+if [[ -n "$HQ_CROP_Y0" ]]; then
+  left_hq_args+=(--crop-y0 "$HQ_CROP_Y0")
+  right_hq_args+=(--crop-y0 "$HQ_CROP_Y0")
+fi
+if [[ -n "$HQ_CROP_Y1" ]]; then
+  left_hq_args+=(--crop-y1 "$HQ_CROP_Y1")
+  right_hq_args+=(--crop-y1 "$HQ_CROP_Y1")
+fi
+if [[ -n "$HQ_LEFT_ROI_X_MIN_PX" ]]; then
+  left_hq_args+=(--roi-x-min-px "$HQ_LEFT_ROI_X_MIN_PX")
+fi
+if [[ -n "$HQ_LEFT_ROI_X_MAX_PX" ]]; then
+  left_hq_args+=(--roi-x-max-px "$HQ_LEFT_ROI_X_MAX_PX")
+fi
+if [[ -n "$HQ_RIGHT_ROI_X_MIN_PX" ]]; then
+  right_hq_args+=(--roi-x-min-px "$HQ_RIGHT_ROI_X_MIN_PX")
+fi
+if [[ -n "$HQ_RIGHT_ROI_X_MAX_PX" ]]; then
+  right_hq_args+=(--roi-x-max-px "$HQ_RIGHT_ROI_X_MAX_PX")
+fi
+if [[ -n "$HQ_ROI_Y_MIN_PX" ]]; then
+  left_hq_args+=(--roi-y-min-px "$HQ_ROI_Y_MIN_PX")
+  right_hq_args+=(--roi-y-min-px "$HQ_ROI_Y_MIN_PX")
+fi
+if [[ -n "$HQ_ROI_Y_MAX_PX" ]]; then
+  left_hq_args+=(--roi-y-max-px "$HQ_ROI_Y_MAX_PX")
+  right_hq_args+=(--roi-y-max-px "$HQ_ROI_Y_MAX_PX")
 fi
 
 echo "start_zmap_side=left device=${left_device}"

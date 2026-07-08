@@ -59,6 +59,29 @@ export NEPTUNE_V03_RAW_TIFF_PATH=/path/to/raw_stack.ome.tif
 bash run_standard_pipeline.sh
 ```
 
+The training and pipeline entry points infer the high-quality initial-zmap
+sample preset from the raw TIFF path before submitting work to SLURM. The
+currently supported high-quality zmap presets are `microtube`, `paint`, and
+`ncp`. If a path looks like `paint` but `ZMAP_SAMPLE_KIND=microtube` is passed,
+submission is rejected before any bootstrap output is produced. Paths that look
+like `dynamin` or `membrane` are also rejected until dedicated zmap presets are
+added, rather than silently falling back to the microtube preset.
+
+For manual submission, override only after validating the preset:
+
+```bash
+ZMAP_SAMPLE_KIND=paint NEPTUNE_V03_RAW_TIFF_PATH=/path/to/paint_stack.ome.tif sbatch train_standard_3367_hqzmap.sh
+```
+
+For the local GUI submitter:
+
+```bash
+./run_gui_submit.sh
+```
+
+The GUI previews the first TIFF frame, draws the left/right crop boxes, infers
+the sample kind from the selected TIFF path, and blocks mismatched submissions.
+
 Default training settings:
 
 - ROI/input size: 96 x 96.

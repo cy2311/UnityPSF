@@ -31,6 +31,11 @@ export PYTHONPATH="$NEPTUNE_DIR/src:$ROOT:${PYTHONPATH:-}"
 export MPLCONFIGDIR="$NEPTUNE_DIR/.local/cache/matplotlib"
 export PYTHONUNBUFFERED=1
 
+MAX_FRAME_ARGS=()
+if [[ -n "${MAX_FRAME:-}" ]]; then
+  MAX_FRAME_ARGS=(--max-frame "$MAX_FRAME")
+fi
+
 "$PYTHON" "$NEPTUNE_DIR/scripts/infer/render_union_raw_ratio_bicolor.py" \
   --left-predictions "$LEFT_PREDICTIONS" \
   --right-predictions "$RIGHT_PREDICTIONS" \
@@ -38,7 +43,15 @@ export PYTHONUNBUFFERED=1
   --output-dir "$OUTPUT_DIR" \
   --ratio-threshold "${RATIO_THRESHOLD:-0.4}" \
   --union-dist-px "${UNION_DIST_PX:-2.0}" \
+  --union-policy "${UNION_POLICY:-right_priority_union}" \
   --min-total-intensity "${MIN_TOTAL_INTENSITY:-0.0}" \
   --right-crop-left "${RIGHT_CROP_LEFT:-600}" \
+  --alignment-mode "${ALIGNMENT_MODE:-auto_translation}" \
+  --alignment-bin-px "${ALIGNMENT_BIN_PX:-4.0}" \
+  --alignment-max-shift-px "${ALIGNMENT_MAX_SHIFT_PX:-80.0}" \
+  --alignment-sample-max "${ALIGNMENT_SAMPLE_MAX:-1000000}" \
+  --qc-match-radius-px "${QC_MATCH_RADIUS_PX:-2.0}" \
+  --qc-sample-max "${QC_SAMPLE_MAX:-200000}" \
+  "${MAX_FRAME_ARGS[@]}" \
   --device "${DEVICE:-cuda:0}" \
   --suffix "${SUFFIX:-union_raw_ratio_unfiltered_thr040_right_priority}"

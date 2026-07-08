@@ -58,6 +58,16 @@ CACHED_WINDOW_MAX_GPU_SEQUENCES="${CACHED_WINDOW_MAX_GPU_SEQUENCES:-2}"
 FIELD_ORIGIN_SAMPLING_MODE="${FIELD_ORIGIN_SAMPLING_MODE:-sliding_window}"
 NAT_GRID_SIZE_X="${NAT_GRID_SIZE_X:-2}"
 NAT_GRID_SIZE_Y="${NAT_GRID_SIZE_Y:-2}"
+LEFT_DOMAIN_CROP_LEFT="${LEFT_DOMAIN_CROP_LEFT:-0}"
+LEFT_DOMAIN_CROP_TOP="${LEFT_DOMAIN_CROP_TOP:-0}"
+LEFT_DOMAIN_CROP_WIDTH="${LEFT_DOMAIN_CROP_WIDTH:-600}"
+LEFT_DOMAIN_CROP_HEIGHT="${LEFT_DOMAIN_CROP_HEIGHT:-1200}"
+RIGHT_DOMAIN_CROP_LEFT="${RIGHT_DOMAIN_CROP_LEFT:-600}"
+RIGHT_DOMAIN_CROP_TOP="${RIGHT_DOMAIN_CROP_TOP:-0}"
+RIGHT_DOMAIN_CROP_WIDTH="${RIGHT_DOMAIN_CROP_WIDTH:-600}"
+RIGHT_DOMAIN_CROP_HEIGHT="${RIGHT_DOMAIN_CROP_HEIGHT:-1200}"
+export LEFT_DOMAIN_CROP_LEFT LEFT_DOMAIN_CROP_TOP LEFT_DOMAIN_CROP_WIDTH LEFT_DOMAIN_CROP_HEIGHT
+export RIGHT_DOMAIN_CROP_LEFT RIGHT_DOMAIN_CROP_TOP RIGHT_DOMAIN_CROP_WIDTH RIGHT_DOMAIN_CROP_HEIGHT
 
 RUN_TAG="${RUN_TAG:-fast_route_roi128_psf51_oldzmap_3052lr_start30_interval5_emit5000_qualitygate_epoch${EPOCHS}_bs${BATCH_SIZE}_steps${STEPS_PER_EPOCH}}"
 INITIAL_ZMAP_TAG="${INITIAL_ZMAP_TAG:-3052_old_zmap}"
@@ -84,6 +94,19 @@ fi
 
 cat > "$OVERRIDE_CONFIG" <<YAML
 train:
+  real_tiff_wake:
+    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+    domains:
+      - name: left
+        crop_left: ${LEFT_DOMAIN_CROP_LEFT}
+        crop_top: ${LEFT_DOMAIN_CROP_TOP}
+        crop_width: ${LEFT_DOMAIN_CROP_WIDTH}
+        crop_height: ${LEFT_DOMAIN_CROP_HEIGHT}
+      - name: right
+        crop_left: ${RIGHT_DOMAIN_CROP_LEFT}
+        crop_top: ${RIGHT_DOMAIN_CROP_TOP}
+        crop_width: ${RIGHT_DOMAIN_CROP_WIDTH}
+        crop_height: ${RIGHT_DOMAIN_CROP_HEIGHT}
   epochs: ${EPOCHS}
   batch_size: ${BATCH_SIZE}
   camera:
@@ -205,6 +228,8 @@ echo "lr_step_size=${LR_STEP_SIZE}"
 echo "lr_gamma=${LR_GAMMA}"
 echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
 echo "raw_tiff=${NEPTUNE_V03_RAW_TIFF_PATH}"
+echo "left_domain_crop=${LEFT_DOMAIN_CROP_LEFT},${LEFT_DOMAIN_CROP_TOP},${LEFT_DOMAIN_CROP_WIDTH},${LEFT_DOMAIN_CROP_HEIGHT}"
+echo "right_domain_crop=${RIGHT_DOMAIN_CROP_LEFT},${RIGHT_DOMAIN_CROP_TOP},${RIGHT_DOMAIN_CROP_WIDTH},${RIGHT_DOMAIN_CROP_HEIGHT}"
 echo "initial_zmap_left=${ZMAP_LEFT}"
 echo "initial_zmap_right=${ZMAP_RIGHT}"
 echo "initial_zmap_tag=${INITIAL_ZMAP_TAG}"
@@ -240,6 +265,17 @@ for env_name in ("ZMAP_LEFT", "ZMAP_RIGHT"):
     print(env_name + "_missing_required_modes", missing)
     if missing:
         raise SystemExit(f"{env_name} missing required modes: {missing}")
+left_shape = np.load(os.environ["ZMAP_LEFT"], allow_pickle=False)["zernike_maps_nm"].shape[-2:]
+right_shape = np.load(os.environ["ZMAP_RIGHT"], allow_pickle=False)["zernike_maps_nm"].shape[-2:]
+expected = {
+    "ZMAP_LEFT": (int(os.environ["LEFT_DOMAIN_CROP_HEIGHT"]), int(os.environ["LEFT_DOMAIN_CROP_WIDTH"])),
+    "ZMAP_RIGHT": (int(os.environ["RIGHT_DOMAIN_CROP_HEIGHT"]), int(os.environ["RIGHT_DOMAIN_CROP_WIDTH"])),
+}
+actual = {"ZMAP_LEFT": tuple(int(v) for v in left_shape), "ZMAP_RIGHT": tuple(int(v) for v in right_shape)}
+print("domain_zmap_shape_check", {"expected_hw": expected, "actual_hw": actual})
+for key in expected:
+    if actual[key] != expected[key]:
+        raise SystemExit(f"{key} zmap shape {actual[key]} does not match configured domain crop H,W {expected[key]}")
 PY
 
 "$PY" -m neptune_v03.config.materialize \
@@ -249,7 +285,7 @@ PY
   --output "$RESOLVED_CONFIG"
 
 echo "resolved_fast_route_3052_strength_config:"
-grep -E "epochs:|batch_size:|steps_per_epoch:|height:|width:|sequence_count:|field_origin_sampling_mode:|field_origin_stride_px:|psf_size:|patch_size_px:|feedback_interval_steps:|start_epoch:|update_interval_epochs:|stop_epoch:|roi_size_px:|roi_bank_valid_core_size_px:|roi_bank_over_cut_px:|gamma_steps:|target_projected_emitters:|posterior_probability_threshold:|posterior_candidate_probability_threshold:|posterior_adjacent_probability_threshold:|roi_bank_probability_threshold:|roi_bank_projection_sample_batch_size:|posterior_batch_size:|dual_domain_coeff_maps:|lr_scheduler:|lr_step_size:|lr_gamma:|lr_step_unit:|enabled:" "$RESOLVED_CONFIG" || true
+grep -E "real_tiff_wake:|crop_left:|crop_top:|crop_width:|crop_height:|epochs:|batch_size:|steps_per_epoch:|height:|width:|sequence_count:|field_origin_sampling_mode:|field_origin_stride_px:|psf_size:|patch_size_px:|feedback_interval_steps:|start_epoch:|update_interval_epochs:|stop_epoch:|roi_size_px:|roi_bank_valid_core_size_px:|roi_bank_over_cut_px:|gamma_steps:|target_projected_emitters:|posterior_probability_threshold:|posterior_candidate_probability_threshold:|posterior_adjacent_probability_threshold:|roi_bank_probability_threshold:|roi_bank_projection_sample_batch_size:|posterior_batch_size:|dual_domain_coeff_maps:|lr_scheduler:|lr_step_size:|lr_gamma:|lr_step_unit:|enabled:" "$RESOLVED_CONFIG" || true
 if grep -E "max_batches:|start_batch:|stop_batch:|update_interval_batches:" "$RESOLVED_CONFIG"; then
   echo "ERROR: batch-budget fields leaked into epoch route config" >&2
   exit 2

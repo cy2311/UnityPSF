@@ -29,11 +29,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ratio-threshold", type=float, default=0.4)
     parser.add_argument("--union-dist-px", type=float, default=2.0)
+    parser.add_argument("--union-policy", choices=("right_priority_union", "matched_only"), default="right_priority_union")
     parser.add_argument("--signal-radius", type=int, default=2)
     parser.add_argument("--bg-inner-radius", type=int, default=6)
     parser.add_argument("--bg-outer-radius", type=int, default=10)
     parser.add_argument("--min-total-intensity", type=float, default=0.0)
     parser.add_argument("--right-crop-left", type=int, default=600)
+    parser.add_argument("--alignment-mode", choices=("none", "auto_translation"), default="auto_translation")
+    parser.add_argument("--left-to-right-dx-px", type=float, default=None)
+    parser.add_argument("--left-to-right-dy-px", type=float, default=None)
+    parser.add_argument("--alignment-bin-px", type=float, default=4.0)
+    parser.add_argument("--alignment-max-shift-px", type=float, default=80.0)
+    parser.add_argument("--alignment-sample-max", type=int, default=1000000)
+    parser.add_argument("--qc-match-radius-px", type=float, default=2.0)
+    parser.add_argument("--qc-sample-max", type=int, default=200000)
     parser.add_argument("--width-px", type=int, default=600)
     parser.add_argument("--height-px", type=int, default=1200)
     parser.add_argument("--camera-pixel-nm-x", type=float, default=101.11)
@@ -54,6 +63,114 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scale-percentile", type=float, default=99.7)
     parser.add_argument("--suffix", default="union_raw_ratio_bicolor_thr040_right_priority")
     return parser.parse_args()
+
+
+def _sample_indices(n: int, max_n: int) -> np.ndarray:
+    if n <= int(max_n):
+        return np.arange(n, dtype=np.int64)
+    return np.linspace(0, n - 1, int(max_n), dtype=np.int64)
+
+
+def estimate_left_to_right_translation(
+    left: dict[str, np.ndarray],
+    right: dict[str, np.ndarray],
+    *,
+    width_px: int,
+    height_px: int,
+    bin_px: float,
+    max_shift_px: float,
+    sample_max: int,
+) -> dict[str, float]:
+    left_idx = _sample_indices(int(left["x_px"].shape[0]), int(sample_max))
+    right_idx = _sample_indices(int(right["x_px"].shape[0]), int(sample_max))
+    lx = left["x_px"][left_idx].astype(np.float32, copy=False)
+    ly = left["y_px"][left_idx].astype(np.float32, copy=False)
+    rx = right["x_px"][right_idx].astype(np.float32, copy=False)
+    ry = right["y_px"][right_idx].astype(np.float32, copy=False)
+    lg = np.isfinite(lx) & np.isfinite(ly) & (lx >= 0) & (lx < float(width_px)) & (ly >= 0) & (ly < float(height_px))
+    rg = np.isfinite(rx) & np.isfinite(ry) & (rx >= 0) & (rx < float(width_px)) & (ry >= 0) & (ry < float(height_px))
+    lx, ly = lx[lg], ly[lg]
+    rx, ry = rx[rg], ry[rg]
+    bw = max(float(bin_px), 1e-6)
+    hist_w = int(math.ceil(float(width_px) / bw))
+    hist_h = int(math.ceil(float(height_px) / bw))
+    left_hist = np.zeros((hist_h, hist_w), dtype=np.float32)
+    right_hist = np.zeros((hist_h, hist_w), dtype=np.float32)
+    li = np.clip((lx / bw).astype(np.int32), 0, hist_w - 1)
+    lj = np.clip((ly / bw).astype(np.int32), 0, hist_h - 1)
+    ri = np.clip((rx / bw).astype(np.int32), 0, hist_w - 1)
+    rj = np.clip((ry / bw).astype(np.int32), 0, hist_h - 1)
+    np.add.at(left_hist, (lj, li), 1.0)
+    np.add.at(right_hist, (rj, ri), 1.0)
+    left_hist = (left_hist - float(left_hist.mean())) / (float(left_hist.std()) + 1e-6)
+    right_hist = (right_hist - float(right_hist.mean())) / (float(right_hist.std()) + 1e-6)
+    shape = (hist_h * 2, hist_w * 2)
+    corr = np.fft.irfft2(np.fft.rfft2(right_hist, shape) * np.conj(np.fft.rfft2(left_hist, shape)), shape)
+    corr = np.fft.fftshift(corr)
+    cy, cx = np.array(corr.shape) // 2
+    max_bins = max(1, int(round(float(max_shift_px) / bw)))
+    win = corr[cy - max_bins : cy + max_bins + 1, cx - max_bins : cx + max_bins + 1]
+    yy, xx = np.unravel_index(int(np.argmax(win)), win.shape)
+    dx = float((xx - max_bins) * bw)
+    dy = float((yy - max_bins) * bw)
+    return {
+        "left_to_right_dx_px": dx,
+        "left_to_right_dy_px": dy,
+        "alignment_peak": float(win[yy, xx]),
+        "alignment_left_sample_count": int(lx.size),
+        "alignment_right_sample_count": int(rx.size),
+        "alignment_bin_px": float(bw),
+        "alignment_max_shift_px": float(max_shift_px),
+    }
+
+
+def estimate_match_fraction(
+    left: dict[str, np.ndarray],
+    right: dict[str, np.ndarray],
+    *,
+    left_to_right_dx_px: float,
+    left_to_right_dy_px: float,
+    radius_px: float,
+    sample_max: int,
+) -> dict[str, float]:
+    try:
+        from scipy.spatial import cKDTree
+    except Exception:
+        return {}
+    left_idx = _sample_indices(int(left["x_px"].shape[0]), int(sample_max))
+    right_idx = _sample_indices(int(right["x_px"].shape[0]), int(sample_max))
+    lxy = np.column_stack(
+        (
+            left["x_px"][left_idx].astype(np.float32, copy=False) + float(left_to_right_dx_px),
+            left["y_px"][left_idx].astype(np.float32, copy=False) + float(left_to_right_dy_px),
+        )
+    )
+    rxy = np.column_stack(
+        (
+            right["x_px"][right_idx].astype(np.float32, copy=False),
+            right["y_px"][right_idx].astype(np.float32, copy=False),
+        )
+    )
+    lg = np.isfinite(lxy).all(axis=1)
+    rg = np.isfinite(rxy).all(axis=1)
+    lxy = lxy[lg]
+    rxy = rxy[rg]
+    if lxy.size == 0 or rxy.size == 0:
+        return {"match_fraction_left_to_right": float("nan"), "match_fraction_right_to_left": float("nan")}
+    radius = float(radius_px)
+    right_tree = cKDTree(rxy)
+    left_to_right, _ = right_tree.query(lxy, k=1, distance_upper_bound=radius)
+    left_tree = cKDTree(lxy)
+    right_to_left, _ = left_tree.query(rxy, k=1, distance_upper_bound=radius)
+    return {
+        "match_radius_px": radius,
+        "match_fraction_left_to_right": float(np.isfinite(left_to_right).mean()),
+        "match_fraction_right_to_left": float(np.isfinite(right_to_left).mean()),
+        "median_nn_left_to_right_px": float(np.nanmedian(np.where(np.isfinite(left_to_right), left_to_right, np.nan))),
+        "median_nn_right_to_left_px": float(np.nanmedian(np.where(np.isfinite(right_to_left), right_to_left, np.nan))),
+        "qc_left_sample_count": int(lxy.shape[0]),
+        "qc_right_sample_count": int(rxy.shape[0]),
+    }
 
 
 def disk_offsets(radius: int) -> np.ndarray:
@@ -126,6 +243,8 @@ def union_frame(
     right_ix: np.ndarray,
     *,
     max_dist_px: float,
+    left_to_right_dx_px: float = 0.0,
+    left_to_right_dy_px: float = 0.0,
 ) -> dict[str, np.ndarray]:
     # Right detections are sorted first so duplicate suppression keeps right coordinates/precision.
     source = np.concatenate(
@@ -135,9 +254,18 @@ def union_frame(
         ]
     )
     ix = np.concatenate([right_ix, left_ix]).astype(np.int64, copy=False)
-    data = right
-    x = np.concatenate([right["x_px"][right_ix], left["x_px"][left_ix]]).astype(np.float32, copy=False)
-    y = np.concatenate([right["y_px"][right_ix], left["y_px"][left_ix]]).astype(np.float32, copy=False)
+    x = np.concatenate(
+        [
+            right["x_px"][right_ix],
+            left["x_px"][left_ix] + float(left_to_right_dx_px),
+        ]
+    ).astype(np.float32, copy=False)
+    y = np.concatenate(
+        [
+            right["y_px"][right_ix],
+            left["y_px"][left_ix] + float(left_to_right_dy_px),
+        ]
+    ).astype(np.float32, copy=False)
     prob = np.concatenate([right["prob"][right_ix], left["prob"][left_ix]]).astype(np.float32, copy=False)
     z = np.concatenate([right["z"][right_ix], left["z"][left_ix]]).astype(np.float32, copy=False)
     photon = np.concatenate([right["photon"][right_ix], left["photon"][left_ix]]).astype(np.float32, copy=False)
@@ -181,6 +309,7 @@ def union_frame(
     return {
         "source": source[keep_arr],
         "source_index": ix[keep_arr],
+        "matched_left_index": np.full(keep_arr.shape, -1, dtype=np.int64),
         "x_px": x[keep_arr],
         "y_px": y[keep_arr],
         "z": z[keep_arr],
@@ -188,6 +317,87 @@ def union_frame(
         "prob": prob[keep_arr],
         "x_sig": x_sig[keep_arr],
         "y_sig": y_sig[keep_arr],
+    }
+
+
+def matched_only_frame(
+    left: dict[str, np.ndarray],
+    right: dict[str, np.ndarray],
+    left_ix: np.ndarray,
+    right_ix: np.ndarray,
+    *,
+    max_dist_px: float,
+    left_to_right_dx_px: float = 0.0,
+    left_to_right_dy_px: float = 0.0,
+) -> dict[str, np.ndarray]:
+    if left_ix.size == 0 or right_ix.size == 0:
+        empty_f = np.asarray([], dtype=np.float32)
+        empty_i = np.asarray([], dtype=np.int64)
+        return {
+            "source": np.asarray([], dtype=np.int8),
+            "source_index": empty_i,
+            "matched_left_index": empty_i,
+            "x_px": empty_f,
+            "y_px": empty_f,
+            "z": empty_f,
+            "photon": empty_f,
+            "prob": empty_f,
+            "x_sig": empty_f,
+            "y_sig": empty_f,
+        }
+    try:
+        from scipy.spatial import cKDTree
+    except Exception as exc:
+        raise RuntimeError("matched_only union requires scipy.spatial.cKDTree") from exc
+
+    left_xy = np.column_stack(
+        (
+            left["x_px"][left_ix].astype(np.float32, copy=False) + float(left_to_right_dx_px),
+            left["y_px"][left_ix].astype(np.float32, copy=False) + float(left_to_right_dy_px),
+        )
+    )
+    right_xy = np.column_stack(
+        (
+            right["x_px"][right_ix].astype(np.float32, copy=False),
+            right["y_px"][right_ix].astype(np.float32, copy=False),
+        )
+    )
+    good_left = np.isfinite(left_xy).all(axis=1)
+    good_right = np.isfinite(right_xy).all(axis=1)
+    if not np.any(good_left) or not np.any(good_right):
+        return matched_only_frame(left, right, np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64), max_dist_px=max_dist_px)
+    left_valid_pos = np.flatnonzero(good_left)
+    right_valid_pos = np.flatnonzero(good_right)
+    tree = cKDTree(right_xy[good_right])
+    dist, nn = tree.query(left_xy[good_left], k=1, distance_upper_bound=float(max_dist_px))
+    keep = np.isfinite(dist)
+    if not np.any(keep):
+        return matched_only_frame(left, right, np.asarray([], dtype=np.int64), np.asarray([], dtype=np.int64), max_dist_px=max_dist_px)
+    left_src = left_ix[left_valid_pos[keep]].astype(np.int64, copy=False)
+    right_src = right_ix[right_valid_pos[nn[keep]]].astype(np.int64, copy=False)
+    # Multiple left detections can choose the same right detection. Keep the highest-probability left partner
+    # per right while retaining the right coordinates/precision for rendering.
+    left_prob = left["prob"][left_src].astype(np.float32, copy=False)
+    order = np.lexsort((-left_prob, right_src))
+    right_sorted = right_src[order]
+    first = np.r_[True, right_sorted[1:] != right_sorted[:-1]]
+    chosen = order[first]
+    left_src = left_src[chosen]
+    right_src = right_src[chosen]
+    sort_out = np.lexsort((right["x_px"][right_src], right["y_px"][right_src]))
+    right_src = right_src[sort_out]
+    left_src = left_src[sort_out]
+    return {
+        "source": np.ones(right_src.size, dtype=np.int8),
+        "source_index": right_src,
+        "matched_left_index": left_src,
+        "x_px": right["x_px"][right_src].astype(np.float32, copy=False),
+        "y_px": right["y_px"][right_src].astype(np.float32, copy=False),
+        "z": right["z"][right_src].astype(np.float32, copy=False),
+        "photon": right["photon"][right_src].astype(np.float32, copy=False),
+        "prob": right["prob"][right_src].astype(np.float32, copy=False),
+        "x_sig": right["x_sig"][right_src].astype(np.float32, copy=False),
+        "y_sig": right["y_sig"][right_src].astype(np.float32, copy=False),
     }
 
 
@@ -242,7 +452,7 @@ def intensity_cuda(
 def write_union_h5(path: Path, rows: dict[str, list[np.ndarray]]) -> dict[str, np.ndarray]:
     path.parent.mkdir(parents=True, exist_ok=True)
     merged = {key: np.concatenate(value) if value else np.asarray([], dtype=np.float32) for key, value in rows.items()}
-    int_cols = {"frame", "source", "source_index", "color_class"}
+    int_cols = {"frame", "source", "source_index", "matched_left_index", "color_class"}
     with h5py.File(path, "w") as handle:
         handle.attrs["schema"] = "neptune_v03_union_raw_ratio_v0.1"
         handle.attrs["columns_json"] = json.dumps(list(merged))
@@ -330,6 +540,62 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     left = read_h5(args.left_predictions)
     right = read_h5(args.right_predictions)
+    if args.left_to_right_dx_px is not None or args.left_to_right_dy_px is not None:
+        left_to_right_dx_px = float(args.left_to_right_dx_px or 0.0)
+        left_to_right_dy_px = float(args.left_to_right_dy_px or 0.0)
+        alignment = {
+            "alignment_mode": "manual_translation",
+            "left_to_right_dx_px": left_to_right_dx_px,
+            "left_to_right_dy_px": left_to_right_dy_px,
+        }
+    elif str(args.alignment_mode) == "auto_translation":
+        alignment = estimate_left_to_right_translation(
+            left,
+            right,
+            width_px=int(args.width_px),
+            height_px=int(args.height_px),
+            bin_px=float(args.alignment_bin_px),
+            max_shift_px=float(args.alignment_max_shift_px),
+            sample_max=int(args.alignment_sample_max),
+        )
+        alignment["alignment_mode"] = "auto_translation"
+        left_to_right_dx_px = float(alignment["left_to_right_dx_px"])
+        left_to_right_dy_px = float(alignment["left_to_right_dy_px"])
+    else:
+        left_to_right_dx_px = 0.0
+        left_to_right_dy_px = 0.0
+        alignment = {
+            "alignment_mode": "none",
+            "left_to_right_dx_px": 0.0,
+            "left_to_right_dy_px": 0.0,
+        }
+    alignment_before = estimate_match_fraction(
+        left,
+        right,
+        left_to_right_dx_px=0.0,
+        left_to_right_dy_px=0.0,
+        radius_px=float(args.qc_match_radius_px),
+        sample_max=int(args.qc_sample_max),
+    )
+    alignment_after = estimate_match_fraction(
+        left,
+        right,
+        left_to_right_dx_px=left_to_right_dx_px,
+        left_to_right_dy_px=left_to_right_dy_px,
+        radius_px=float(args.qc_match_radius_px),
+        sample_max=int(args.qc_sample_max),
+    )
+    print(
+        json.dumps(
+            {
+                "alignment": alignment,
+                "qc_before": alignment_before,
+                "qc_after": alignment_after,
+            },
+            indent=2,
+        ),
+        flush=True,
+    )
     left_order, left_frames = frame_index(left["frame"], args.max_frame)
     right_order, right_frames = frame_index(right["frame"], args.max_frame)
     reader = FrameReader(args.sample_tiff)
@@ -342,6 +608,7 @@ def main() -> int:
         "z",
         "source",
         "source_index",
+        "matched_left_index",
         "photon",
         "prob",
         "x_sig",
@@ -368,15 +635,63 @@ def main() -> int:
         ri = right_order[rs:re]
         stats["left_raw"] += int(li.size)
         stats["right_raw"] += int(ri.size)
-        union = union_frame(left, right, li, ri, max_dist_px=float(args.union_dist_px))
+        if str(args.union_policy) == "matched_only":
+            union = matched_only_frame(
+                left,
+                right,
+                li,
+                ri,
+                max_dist_px=float(args.union_dist_px),
+                left_to_right_dx_px=left_to_right_dx_px,
+                left_to_right_dy_px=left_to_right_dy_px,
+            )
+        else:
+            union = union_frame(
+                left,
+                right,
+                li,
+                ri,
+                max_dist_px=float(args.union_dist_px),
+                left_to_right_dx_px=left_to_right_dx_px,
+                left_to_right_dy_px=left_to_right_dy_px,
+            )
         if union["x_px"].size == 0:
             continue
         stats["union_total"] += int(union["x_px"].size)
         for start in range(0, union["x_px"].size, int(args.batch_size)):
             stop = min(union["x_px"].size, start + int(args.batch_size))
-            local_xy = np.column_stack((union["x_px"][start:stop], union["y_px"][start:stop])).astype(np.float32, copy=False)
-            left_i = intensity_cuda(reader, frame, local_xy, signal, bg, device=str(args.device))
-            right_xy = local_xy.copy()
+            output_xy = np.column_stack((union["x_px"][start:stop], union["y_px"][start:stop])).astype(np.float32, copy=False)
+            source = union["source"][start:stop].astype(np.int8, copy=False)
+            source_index = union["source_index"][start:stop].astype(np.int64, copy=False)
+            matched_left_index = union["matched_left_index"][start:stop].astype(np.int64, copy=False)
+            left_xy = np.empty_like(output_xy)
+            right_xy = np.empty_like(output_xy)
+            right_mask = source == 1
+            left_mask = ~right_mask
+            if np.any(right_mask):
+                ri_src = source_index[right_mask]
+                right_xy[right_mask, 0] = right["x_px"][ri_src]
+                right_xy[right_mask, 1] = right["y_px"][ri_src]
+                matched_left = matched_left_index[right_mask]
+                has_matched_left = matched_left >= 0
+                if np.any(has_matched_left):
+                    left_src = matched_left[has_matched_left]
+                    right_local = np.flatnonzero(right_mask)
+                    target = right_local[has_matched_left]
+                    left_xy[target, 0] = left["x_px"][left_src]
+                    left_xy[target, 1] = left["y_px"][left_src]
+                if np.any(~has_matched_left):
+                    right_local = np.flatnonzero(right_mask)
+                    target = right_local[~has_matched_left]
+                    left_xy[target, 0] = right_xy[target, 0] - float(left_to_right_dx_px)
+                    left_xy[target, 1] = right_xy[target, 1] - float(left_to_right_dy_px)
+            if np.any(left_mask):
+                li_src = source_index[left_mask]
+                left_xy[left_mask, 0] = left["x_px"][li_src]
+                left_xy[left_mask, 1] = left["y_px"][li_src]
+                right_xy[left_mask, 0] = left_xy[left_mask, 0] + float(left_to_right_dx_px)
+                right_xy[left_mask, 1] = left_xy[left_mask, 1] + float(left_to_right_dy_px)
+            left_i = intensity_cuda(reader, frame, left_xy, signal, bg, device=str(args.device))
             right_xy[:, 0] += float(args.right_crop_left)
             right_i = intensity_cuda(reader, frame, right_xy, signal, bg, device=str(args.device))
             total_i = left_i + right_i
@@ -385,9 +700,10 @@ def main() -> int:
                 continue
             ratio = right_i[keep] / (total_i[keep] + 1e-12)
             color = (ratio >= float(args.ratio_threshold)).astype(np.int32)
-            idx = np.flatnonzero(keep) + start
+            local_idx = np.flatnonzero(keep)
+            idx = local_idx + start
             buffers["frame"].append(np.full(idx.size, int(frame), dtype=np.int32))
-            for key in ("x_px", "y_px", "z", "source", "source_index", "photon", "prob", "x_sig", "y_sig"):
+            for key in ("x_px", "y_px", "z", "source", "source_index", "matched_left_index", "photon", "prob", "x_sig", "y_sig"):
                 buffers[key].append(union[key][idx])
             buffers["I_left_raw3"].append(left_i[keep])
             buffers["I_right_raw3"].append(right_i[keep])
@@ -421,8 +737,12 @@ def main() -> int:
         "ratio_tiff": str(ratio_png.with_suffix(".tiff")),
         "ratio_threshold": float(args.ratio_threshold),
         "union_dist_px": float(args.union_dist_px),
+        "union_policy": str(args.union_policy),
         "min_total_intensity": float(args.min_total_intensity),
         "right_priority_for_duplicates": True,
+        "alignment": alignment,
+        "alignment_qc_before": alignment_before,
+        "alignment_qc_after": alignment_after,
         "left_raw": int(stats["left_raw"]),
         "right_raw": int(stats["right_raw"]),
         "union_total": int(stats["union_total"]),

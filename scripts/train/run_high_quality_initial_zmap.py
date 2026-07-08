@@ -16,6 +16,44 @@ from neptune_iwae.zmap_main.pipeline_presets import build_zmap_preset
 from neptune_iwae.zmap_main.real_nat_diagnostics import RealNATDiagnosticsConfig, run_real_nat_diagnostics
 
 
+SUPPORTED_ZMAP_SAMPLES = {"microtube", "microtubule", "paint", "ncp"}
+
+
+def infer_zmap_sample_kind_from_path(path: Path) -> str | None:
+    text = str(path).lower()
+    if "ncp" in text:
+        return "ncp"
+    if "paint" in text or "lh1" in text:
+        return "paint"
+    if "microtube" in text or "spool_800mw" in text or "3d_7_1" in text:
+        return "microtube"
+    if "dynamin" in text:
+        return "dynamin"
+    if "membrane" in text:
+        return "membrane"
+    return None
+
+
+def validate_zmap_sample_kind_for_tiff(sample: str, raw_tiff: Path) -> None:
+    sample_norm = str(sample).strip().lower()
+    inferred = infer_zmap_sample_kind_from_path(raw_tiff)
+    if sample_norm not in SUPPORTED_ZMAP_SAMPLES:
+        if sample_norm in {"dynamin", "membrane"}:
+            raise ValueError(
+                f"ZMAP_SAMPLE_KIND={sample_norm!r} was inferred from the raw TIFF path, but no dedicated "
+                f"high-quality zmap preset exists for {sample_norm} yet. Refusing to silently use another preset."
+            )
+        raise ValueError(
+            f"Unsupported ZMAP_SAMPLE_KIND={sample_norm!r}. Supported high-quality zmap presets are: "
+            f"{', '.join(sorted(SUPPORTED_ZMAP_SAMPLES))}."
+        )
+    if inferred is not None and inferred != sample_norm:
+        raise ValueError(
+            f"Raw TIFF path appears to be sample kind {inferred!r}, but ZMAP_SAMPLE_KIND={sample_norm!r}. "
+            f"Refusing to build an initial zmap with the wrong preset. raw_tiff={raw_tiff}"
+        )
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
@@ -74,6 +112,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--repo-root", type=Path, default=Path("/home/guest/Others/main/race"))
     parser.add_argument("--raw-tiff", type=Path, default=None)
+    parser.add_argument("--zmap-sample", type=str, default="microtube")
     parser.add_argument("--max-emitters", type=int, default=500)
     parser.add_argument("--alternating-rounds", type=int, default=20)
     parser.add_argument("--alternating-local-steps", type=int, default=100)
@@ -85,6 +124,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-percentile", type=float, default=1.0)
     parser.add_argument("--baseline-frame-start", type=int, default=0)
     parser.add_argument("--baseline-frame-stop", type=int, default=100)
+    parser.add_argument("--crop-x0", type=int, default=None)
+    parser.add_argument("--crop-x1", type=int, default=None)
+    parser.add_argument("--crop-y0", type=int, default=None)
+    parser.add_argument("--crop-y1", type=int, default=None)
+    parser.add_argument("--roi-x-min-px", type=float, default=None)
+    parser.add_argument("--roi-x-max-px", type=float, default=None)
+    parser.add_argument("--roi-y-min-px", type=float, default=None)
+    parser.add_argument("--roi-y-max-px", type=float, default=None)
     return parser.parse_args()
 
 
@@ -100,8 +147,9 @@ def main() -> int:
             (neptune_iwae_root, repo_root),
         )
     )
+    validate_zmap_sample_kind_for_tiff(args.zmap_sample, raw_tiff)
 
-    preset = build_zmap_preset("microtube", args.side)
+    preset = build_zmap_preset(args.zmap_sample, args.side)
     preset = replace(
         preset,
         tiff_path=raw_tiff,
@@ -129,6 +177,14 @@ def main() -> int:
             if args.spatial_balance_max_per_cell is None
             else int(args.spatial_balance_max_per_cell)
         ),
+        crop_x0=preset.crop_x0 if args.crop_x0 is None else int(args.crop_x0),
+        crop_x1=preset.crop_x1 if args.crop_x1 is None else int(args.crop_x1),
+        crop_y0=preset.crop_y0 if args.crop_y0 is None else int(args.crop_y0),
+        crop_y1=preset.crop_y1 if args.crop_y1 is None else int(args.crop_y1),
+        roi_x_min_px=preset.roi_x_min_px if args.roi_x_min_px is None else float(args.roi_x_min_px),
+        roi_x_max_px=preset.roi_x_max_px if args.roi_x_max_px is None else float(args.roi_x_max_px),
+        roi_y_min_px=preset.roi_y_min_px if args.roi_y_min_px is None else float(args.roi_y_min_px),
+        roi_y_max_px=preset.roi_y_max_px if args.roi_y_max_px is None else float(args.roi_y_max_px),
     )
 
     baseline_adu = _estimate_channel_baseline(
@@ -218,7 +274,7 @@ def main() -> int:
 
     alternating_stack = export_dir / "alternating_full_roi_zernike_maps_nm.npz"
     result = {
-        "sample": "microtube",
+        "sample": str(args.zmap_sample),
         "side": args.side,
         "preset": _jsonable(asdict(preset)),
         "run_root": str(run_root),

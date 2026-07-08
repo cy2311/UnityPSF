@@ -29,7 +29,48 @@ CHANNEL_INFER_SCRIPT="${CHANNEL_INFER_SCRIPT:-$NEPTUNE_DIR/scripts/infer/standar
 DUAL_SCRIPT="${DUAL_SCRIPT:-$NEPTUNE_DIR/scripts/infer/run_3371_union_raw_ratio_bicolor.sbatch}"
 SAMPLE_TIFF="${SAMPLE_TIFF:-${NEPTUNE_V03_RAW_TIFF_PATH:-$ROOT/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}}"
 PIPELINE_TAG="${PIPELINE_TAG:-standard_v03_$(date +%Y%m%d_%H%M%S)}"
-RUN_TAG="${RUN_TAG:-standard_3371_fast_route_roi96_psf25_fresh_hqzmap_emit500_round20_p1baseline_3052lr_start30_interval5_emit5000_epoch300_bs24_steps417_${PIPELINE_TAG}}"
+
+infer_zmap_sample_kind_from_path() {
+  local path_lc
+  path_lc="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$path_lc" == *"ncp"* ]]; then
+    printf 'ncp'
+  elif [[ "$path_lc" == *"paint"* || "$path_lc" == *"lh1"* ]]; then
+    printf 'paint'
+  elif [[ "$path_lc" == *"microtube"* || "$path_lc" == *"spool_800mw"* || "$path_lc" == *"3d_7_1"* ]]; then
+    printf 'microtube'
+  elif [[ "$path_lc" == *"dynamin"* ]]; then
+    printf 'dynamin'
+  elif [[ "$path_lc" == *"membrane"* ]]; then
+    printf 'membrane'
+  else
+    printf ''
+  fi
+}
+
+INFERRED_ZMAP_SAMPLE_KIND="$(infer_zmap_sample_kind_from_path "$SAMPLE_TIFF")"
+if [[ -z "${ZMAP_SAMPLE_KIND+x}" || -z "${ZMAP_SAMPLE_KIND}" ]]; then
+  ZMAP_SAMPLE_KIND="${INFERRED_ZMAP_SAMPLE_KIND:-microtube}"
+fi
+if [[ -n "$INFERRED_ZMAP_SAMPLE_KIND" && "$INFERRED_ZMAP_SAMPLE_KIND" != "$ZMAP_SAMPLE_KIND" ]]; then
+  echo "SAMPLE_TIFF appears to be sample kind '$INFERRED_ZMAP_SAMPLE_KIND', but ZMAP_SAMPLE_KIND='$ZMAP_SAMPLE_KIND'." >&2
+  echo "Refusing to submit because this would build an initial zmap with the wrong preset." >&2
+  echo "sample_tiff=${SAMPLE_TIFF}" >&2
+  exit 2
+fi
+case "$ZMAP_SAMPLE_KIND" in
+  microtube|microtubule|paint|ncp) ;;
+  dynamin|membrane)
+    echo "ZMAP_SAMPLE_KIND=$ZMAP_SAMPLE_KIND was inferred from SAMPLE_TIFF, but no dedicated high-quality zmap preset exists for it yet." >&2
+    echo "Refusing to submit a pipeline that would silently use the wrong initial-zmap preset." >&2
+    exit 2
+    ;;
+  *)
+    echo "Unsupported ZMAP_SAMPLE_KIND=$ZMAP_SAMPLE_KIND. Supported high-quality zmap presets are: microtube, paint, ncp." >&2
+    exit 2
+    ;;
+esac
+RUN_TAG="${RUN_TAG:-standard_3371_${ZMAP_SAMPLE_KIND}_fast_route_roi96_psf25_fresh_hqzmap_emit500_round20_p1baseline_3052lr_start30_interval5_emit5000_epoch300_bs24_steps417_${PIPELINE_TAG}}"
 
 mkdir -p "$NEPTUNE_DIR/logs/slurm" "$NEPTUNE_DIR/output"
 
@@ -71,6 +112,7 @@ if [[ "$PIPELINE_MODE" == "train_infer" ]]; then
   train_job="$(submit_export "" "$TRAIN_SCRIPT" \
     NEPTUNE_V03_ROOT="$ROOT" \
     NEPTUNE_V03_RAW_TIFF_PATH="$SAMPLE_TIFF" \
+    ZMAP_SAMPLE_KIND="$ZMAP_SAMPLE_KIND" \
     RUN_TAG="$RUN_TAG")"
   RUN_DIR="$NEPTUNE_DIR/output/$RUN_TAG/${RUN_TAG}_${train_job}"
   infer_dependency="afterok:${train_job}"

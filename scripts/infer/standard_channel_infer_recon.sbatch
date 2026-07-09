@@ -79,4 +79,12 @@ mkdir -p "$OUTPUT_DIR" "$MPLCONFIGDIR"
   --split-th "${SPLIT_TH:-0.6}" \
   --filter-prob-min "${FILTER_PROB_MIN:-0.90}" \
   --side "$SIDE" \
+  --left-crop-left "${LEFT_DOMAIN_CROP_LEFT:-0}" \
+  --left-crop-top "${LEFT_DOMAIN_CROP_TOP:-0}" \
+  --left-crop-width "${LEFT_DOMAIN_CROP_WIDTH:-600}" \
+  --left-crop-height "${LEFT_DOMAIN_CROP_HEIGHT:-1200}" \
+  --right-crop-left "${RIGHT_DOMAIN_CROP_LEFT:-600}" \
+  --right-crop-top "${RIGHT_DOMAIN_CROP_TOP:-0}" \
+  --right-crop-width "${RIGHT_DOMAIN_CROP_WIDTH:-600}" \
+  --right-crop-height "${RIGHT_DOMAIN_CROP_HEIGHT:-1200}" \
   --infer-amp

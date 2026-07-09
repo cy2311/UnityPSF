@@ -89,6 +89,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-pixel-nm", type=float, default=10.0)
     parser.add_argument("--spot-radius-nm", type=float, default=45.0)
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
+    parser.add_argument("--left-crop-left", type=int, default=0)
+    parser.add_argument("--left-crop-top", type=int, default=0)
+    parser.add_argument("--left-crop-width", type=int, default=600)
+    parser.add_argument("--left-crop-height", type=int, default=1200)
+    parser.add_argument("--right-crop-left", type=int, default=600)
+    parser.add_argument("--right-crop-top", type=int, default=0)
+    parser.add_argument("--right-crop-width", type=int, default=600)
+    parser.add_argument("--right-crop-height", type=int, default=1200)
     parser.add_argument("--infer-recon-root", type=Path, default=SRC_ROOT / "neptune_v03" / "infer_recon")
     parser.add_argument("--input-preprocess", choices=("fd_deeploc_recenter", "raw_adu"), default="fd_deeploc_recenter")
     parser.add_argument("--infer-amp", action="store_true", default=True)
@@ -543,10 +551,10 @@ def main() -> int:
                     runtime=runtime,
                     device=device,
                     coeff_map=coeff_maps["left"],
-                    crop_left=0,
-                    crop_top=0,
-                    crop_width=600,
-                    crop_height=1200,
+                    crop_left=int(args.left_crop_left),
+                    crop_top=int(args.left_crop_top),
+                    crop_width=int(args.left_crop_width),
+                    crop_height=int(args.left_crop_height),
                     domain_index=0,
                     frame_proc=frame_proc,
                 )
@@ -560,10 +568,10 @@ def main() -> int:
                     runtime=runtime,
                     device=device,
                     coeff_map=coeff_maps["right"],
-                    crop_left=600,
-                    crop_top=0,
-                    crop_width=600,
-                    crop_height=1200,
+                    crop_left=int(args.right_crop_left),
+                    crop_top=int(args.right_crop_top),
+                    crop_width=int(args.right_crop_width),
+                    crop_height=int(args.right_crop_height),
                     domain_index=1,
                     frame_proc=frame_proc,
                 )

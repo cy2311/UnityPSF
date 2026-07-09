@@ -46,6 +46,8 @@ fi
   --union-policy "${UNION_POLICY:-right_priority_union}" \
   --min-total-intensity "${MIN_TOTAL_INTENSITY:-0.0}" \
   --right-crop-left "${RIGHT_CROP_LEFT:-600}" \
+  --width-px "${WIDTH_PX:-600}" \
+  --height-px "${HEIGHT_PX:-1200}" \
   --alignment-mode "${ALIGNMENT_MODE:-auto_translation}" \
   --alignment-bin-px "${ALIGNMENT_BIN_PX:-4.0}" \
   --alignment-max-shift-px "${ALIGNMENT_MAX_SHIFT_PX:-80.0}" \

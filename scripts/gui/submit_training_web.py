@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import os
 import re
 import subprocess
 import time
@@ -28,7 +29,10 @@ NEPTUNE_DIR = ROOT / "neptune_v0.3"
 TRAINING_SETS_DIR = ROOT / "datasets/training_sets"
 DEFAULT_RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
 TRAIN_SCRIPT = NEPTUNE_DIR / "train_standard_3367_hqzmap.sh"
+PIPELINE_SCRIPT = NEPTUNE_DIR / "run_standard_pipeline.sh"
 SUPPORTED_ZMAP_SAMPLES = ("microtube", "paint", "ncp", "dynamin", "membrane")
+WORKFLOW_MODES = ("train_infer_recon", "train_only")
+CHANNEL_MODES = ("dual", "left", "right")
 KNOWN_SAMPLE_PATHS = {
     "microtube default": DEFAULT_RAW_TIFF,
     "dynamin_3d_5_1": TRAINING_SETS_DIR / "dynamin_3d_5_1",
@@ -49,6 +53,8 @@ class Crop:
 @dataclass(frozen=True)
 class SubmissionConfig:
     raw_tiff: str
+    workflow_mode: str
+    channel_mode: str
     crop_preset: str
     zmap_sample_kind: str
     left_crop: Crop
@@ -65,6 +71,8 @@ class SubmissionConfig:
     hq_max_emitters: int
     hq_alternating_rounds: int
     hq_spatial_balance_grid_px: str
+    prob_threshold: str
+    filter_prob_min: str
     run_tag: str
 
 
@@ -194,13 +202,18 @@ def _default_run_tag(config: SubmissionConfig) -> str:
 
 
 def _format_export(config: SubmissionConfig) -> dict[str, str]:
+    valid_roi_size = max(1, int(config.roi_size) - 16)
     env = {
         "NEPTUNE_V03_RAW_TIFF_PATH": config.raw_tiff,
+        "SAMPLE_TIFF": config.raw_tiff,
+        "PIPELINE_MODE": "train_infer" if config.workflow_mode == "train_infer_recon" else "train_infer",
+        "CHANNEL_MODE": config.channel_mode,
         "ZMAP_SAMPLE_KIND": config.zmap_sample_kind,
         "EPOCHS": str(config.epochs),
         "BATCH_SIZE": str(config.batch_size),
         "STEPS_PER_EPOCH": str(config.steps_per_epoch),
         "ROI_SIZE": str(config.roi_size),
+        "VALID_ROI_SIZE": str(valid_roi_size),
         "PSF_SIZE": str(config.psf_size),
         "ROI_STRIDE": str(config.roi_stride),
         "START_EPOCH": str(config.start_epoch),
@@ -228,6 +241,8 @@ def _format_export(config: SubmissionConfig) -> dict[str, str]:
         "HQ_RIGHT_ROI_X_MAX_PX": str(config.right_crop.left + config.right_crop.width),
         "HQ_ROI_Y_MIN_PX": str(config.left_crop.top),
         "HQ_ROI_Y_MAX_PX": str(config.left_crop.top + config.left_crop.height),
+        "PROB_THRESHOLD": config.prob_threshold,
+        "FILTER_PROB_MIN": config.filter_prob_min,
         "RUN_TAG": config.run_tag,
     }
     if config.hq_spatial_balance_grid_px.strip():
@@ -235,13 +250,15 @@ def _format_export(config: SubmissionConfig) -> dict[str, str]:
     return env
 
 
-def _sbatch_command(config: SubmissionConfig) -> list[str]:
+def _submit_command(config: SubmissionConfig) -> tuple[list[str], dict[str, str] | None]:
     env = _format_export(config)
     for key, value in env.items():
         if "," in value:
             raise ValueError(f"Environment value for {key} contains comma, which sbatch --export cannot encode safely: {value}")
+    if config.workflow_mode == "train_infer_recon":
+        return ["bash", str(PIPELINE_SCRIPT)], env
     export_arg = "ALL," + ",".join(f"{key}={value}" for key, value in env.items())
-    return ["sbatch", f"--export={export_arg}", str(TRAIN_SCRIPT)]
+    return ["sbatch", f"--export={export_arg}", str(TRAIN_SCRIPT)], None
 
 
 def _collect_config(form: dict[str, str]) -> SubmissionConfig:
@@ -257,11 +274,19 @@ def _collect_config(form: dict[str, str]) -> SubmissionConfig:
     zmap_sample_kind = form.get("zmap_sample_kind", "").strip().lower()
     if zmap_sample_kind not in SUPPORTED_ZMAP_SAMPLES:
         raise ValueError(f"Unsupported sample kind: {zmap_sample_kind}")
+    workflow_mode = form.get("workflow_mode", "train_infer_recon").strip()
+    if workflow_mode not in WORKFLOW_MODES:
+        raise ValueError(f"Unsupported workflow mode: {workflow_mode}")
+    channel_mode = form.get("channel_mode", "dual").strip()
+    if channel_mode not in CHANNEL_MODES:
+        raise ValueError(f"Unsupported channel mode: {channel_mode}")
     inferred = infer_zmap_sample_kind_from_path(raw_tiff)
     if inferred is not None and inferred != zmap_sample_kind:
         raise ValueError(f"Path looks like {inferred!r}, but sample kind is {zmap_sample_kind!r}.")
     config = SubmissionConfig(
         raw_tiff=str(raw_tiff),
+        workflow_mode=workflow_mode,
+        channel_mode=channel_mode,
         crop_preset=form.get("crop_preset", "full"),
         zmap_sample_kind=zmap_sample_kind,
         left_crop=left_crop,
@@ -278,6 +303,8 @@ def _collect_config(form: dict[str, str]) -> SubmissionConfig:
         hq_max_emitters=_safe_int(form, "hq_max_emitters", 1),
         hq_alternating_rounds=_safe_int(form, "hq_alternating_rounds", 1),
         hq_spatial_balance_grid_px=form.get("hq_spatial_balance_grid_px", "").strip(),
+        prob_threshold=form.get("prob_threshold", "0.70").strip() or "0.70",
+        filter_prob_min=form.get("filter_prob_min", "0.90").strip() or "0.90",
         run_tag=form.get("run_tag", "").strip(),
     )
     if not config.run_tag:
@@ -326,6 +353,8 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
     values = {
         "known_sample": sample_key,
         "raw_tiff": raw_path,
+        "workflow_mode": form.get("workflow_mode", "train_infer_recon"),
+        "channel_mode": form.get("channel_mode", "dual"),
         "zmap_sample_kind": form.get("zmap_sample_kind", inferred),
         "crop_preset": crop_preset,
         "left_left": form.get("left_left", str(left.left)),
@@ -348,6 +377,8 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
         "hq_max_emitters": form.get("hq_max_emitters", "500"),
         "hq_alternating_rounds": form.get("hq_alternating_rounds", "20"),
         "hq_spatial_balance_grid_px": form.get("hq_spatial_balance_grid_px", ""),
+        "prob_threshold": form.get("prob_threshold", "0.70"),
+        "filter_prob_min": form.get("filter_prob_min", "0.90"),
         "run_tag": form.get("run_tag", ""),
     }
 
@@ -364,6 +395,14 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
     kind_options = "\n".join(
         f'<option value="{kind}" {"selected" if kind == values["zmap_sample_kind"] else ""}>{kind}</option>'
         for kind in SUPPORTED_ZMAP_SAMPLES
+    )
+    workflow_options = "\n".join(
+        f'<option value="{mode}" {"selected" if mode == values["workflow_mode"] else ""}>{mode}</option>'
+        for mode in WORKFLOW_MODES
+    )
+    channel_options = "\n".join(
+        f'<option value="{mode}" {"selected" if mode == values["channel_mode"] else ""}>{mode}</option>'
+        for mode in CHANNEL_MODES
     )
     preset_options = "\n".join(
         f'<option value="{preset}" {"selected" if preset == values["crop_preset"] else ""}>{preset}</option>'
@@ -433,6 +472,10 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
       </label>
       <p class="hint">{html.escape(info)}</p>
       <div class="row">
+        <label>Workflow<select name="workflow_mode">{workflow_options}</select></label>
+        <label>Recon channel<select name="channel_mode">{channel_options}</select></label>
+      </div>
+      <div class="row">
         <label>Sample kind<select name="zmap_sample_kind">{kind_options}</select></label>
         <label>Crop preset<select name="crop_preset">{preset_options}</select></label>
         <button class="secondary" formaction="/load">Refresh Preview</button>
@@ -447,6 +490,7 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
       <h2>Training</h2>
       <div class="row">{field("epochs", "epochs")}{field("batch_size", "batch")}{field("steps_per_epoch", "steps")}{field("roi_size", "roi")}{field("psf_size", "psf")}{field("roi_stride", "stride")}</div>
       <div class="row">{field("start_epoch", "start update")}{field("update_interval_epochs", "interval")}{field("target_projected_emitters", "target emitters", 12)}{field("hq_max_emitters", "HQ emitters", 12)}{field("hq_alternating_rounds", "HQ rounds", 12)}{field("hq_spatial_balance_grid_px", "HQ grid px", 12)}</div>
+      <div class="row">{field("prob_threshold", "infer prob", 10)}{field("filter_prob_min", "recon prob", 10)}</div>
       <label style="display:flex">Run tag
         <input class="path" name="run_tag" value="{html.escape(values["run_tag"])}" placeholder="empty = auto">
       </label>
@@ -491,16 +535,22 @@ class SubmitHandler(BaseHTTPRequestHandler):
                 self._send_html(_html_page(form=form))
                 return
             config = _collect_config(form)
-            command = _sbatch_command(config)
+            command, command_env = _submit_command(config)
             command_text = " ".join(command)
+            if command_env:
+                env_text = "\n".join(f"{key}={value}" for key, value in sorted(command_env.items()))
+                command_text = f"{env_text}\n\n{command_text}"
             if path == "/dry-run":
                 message = f"Dry run OK.\nRun tag: {config.run_tag}\n\n{command_text}"
                 self._send_html(_html_page(message=message, form={**form, "run_tag": config.run_tag}))
                 return
             if path == "/submit":
-                result = subprocess.run(command, check=True, text=True, capture_output=True)
+                env = os.environ.copy()
+                if command_env:
+                    env.update(command_env)
+                result = subprocess.run(command, check=True, text=True, capture_output=True, env=env)
                 output = (result.stdout or "").strip()
-                job_match = re.search(r"Submitted batch job\s+(\d+)", output)
+                job_match = re.search(r"(?:Submitted batch job|train_job=)\s*(?:=)?\s*(\d+)", output)
                 job_id = job_match.group(1) if job_match else None
                 manifest_dir = NEPTUNE_DIR / ".local/submissions"
                 manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -510,6 +560,7 @@ class SubmitHandler(BaseHTTPRequestHandler):
                     "job_id": job_id,
                     "sbatch_stdout": output,
                     "command": command,
+                    "command_env": command_env,
                     "config": asdict(config),
                 }
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")

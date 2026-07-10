@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
-
 import torch
 
 from neptune_v03.localization.smlm_output import SMLMOutputChannels
+
+
+LITELOC_CANDIDATE_THRESHOLD = 0.3
+LITELOC_ADJACENT_THRESHOLD = 0.6
+LITELOC_EVAL_THRESHOLD = 0.3
+LITELOC_FORMAL_INFER_THRESHOLD = 0.7
 
 
 @dataclass(frozen=True)
@@ -15,6 +19,8 @@ class LegacyEmitterSet:
     xyz_px_nm: torch.Tensor
     photons: torch.Tensor
     sigma_xy_px: torch.Tensor
+    sigma_z_nm: torch.Tensor | None = None
+    sigma_photons: torch.Tensor | None = None
 
 
 @dataclass(frozen=True)
@@ -39,58 +45,73 @@ class LegacyEvalMetrics:
         }
 
 
-def spatial_integration_probability(
-    p: torch.Tensor,
-    *,
-    raw_th: float = 0.3,
-    split_th: float = 0.6,
-    aggregation: str = "norm_sum",
-) -> torch.Tensor:
+def liteloc_spatial_integration_probability(p: torch.Tensor) -> torch.Tensor:
     if p.ndim != 3:
         raise ValueError(f"p must have shape (N,H,W), got {tuple(p.shape)}")
-    aggregate = _aggregation_fn(aggregation)
     filt = torch.tensor(
         [[0.0, 1.0, 0.0], [1.0, 1.0, 1.0], [0.0, 1.0, 0.0]],
         dtype=p.dtype,
         device=p.device,
     ).view(1, 1, 3, 3)
     conv = torch.nn.functional.conv2d(p.unsqueeze(1), filt, padding=1)
-    p_clip = torch.where(p > float(raw_th), p, torch.zeros_like(p))
+    p_clip = torch.where(p > LITELOC_CANDIDATE_THRESHOLD, p, torch.zeros_like(p))
     pool = torch.nn.functional.max_pool2d(p_clip.unsqueeze(1), kernel_size=3, stride=1, padding=1)
     max_mask1 = torch.eq(p.unsqueeze(1), pool)
     p_ps1 = max_mask1.to(dtype=p.dtype) * conv
 
     p_copy = p.unsqueeze(1).clone()
     p_copy *= 1.0 - max_mask1.to(dtype=p.dtype)
-    max_mask2 = torch.where(p_copy > float(split_th), torch.ones_like(p_copy), torch.zeros_like(p_copy))
+    max_mask2 = torch.where(p_copy > LITELOC_ADJACENT_THRESHOLD, torch.ones_like(p_copy), torch.zeros_like(p_copy))
     p_ps2 = max_mask2 * conv
-    return aggregate(p_ps1, p_ps2).squeeze(1)
+    return (p_ps1 + p_ps2).squeeze(1)
 
 
-def decode_legacy_smlm_emitters(
+def decode_liteloc_eval_emitters(
     y_out: torch.Tensor,
     *,
-    raw_th: float = 0.3,
-    split_th: float = 0.6,
-    accept_th: float = 0.5,
     photon_scale: float | None = None,
     z_scale: float | None = None,
-    aggregation: str = "norm_sum",
-    max_emitters: int | None = None,
+) -> LegacyEmitterSet:
+    return _decode_liteloc_emitters(
+        y_out,
+        accept_threshold=LITELOC_EVAL_THRESHOLD,
+        photon_scale=photon_scale,
+        z_scale=z_scale,
+    )
+
+
+def decode_liteloc_formal_infer_emitters(
+    y_out: torch.Tensor,
+    *,
+    photon_scale: float | None = None,
+    z_scale: float | None = None,
+) -> LegacyEmitterSet:
+    return _decode_liteloc_emitters(
+        y_out,
+        accept_threshold=LITELOC_FORMAL_INFER_THRESHOLD,
+        photon_scale=photon_scale,
+        z_scale=z_scale,
+    )
+
+
+def _decode_liteloc_emitters(
+    y_out: torch.Tensor,
+    *,
+    accept_threshold: float,
+    photon_scale: float | None,
+    z_scale: float | None,
 ) -> LegacyEmitterSet:
     if y_out.ndim != 4 or int(y_out.shape[1]) != SMLMOutputChannels.count:
         raise ValueError(f"expected SMLM output shape (N,10,H,W), got {tuple(y_out.shape)}")
     out = y_out.detach()
-    p = spatial_integration_probability(out[:, SMLMOutputChannels.p], raw_th=raw_th, split_th=split_th, aggregation=aggregation)
-    batch_size, height, width = int(p.shape[0]), int(p.shape[1]), int(p.shape[2])
+    p = liteloc_spatial_integration_probability(out[:, SMLMOutputChannels.p])
+    height, width = int(p.shape[1]), int(p.shape[2])
     rows, cols = torch.meshgrid(
         torch.arange(height, dtype=out.dtype, device=out.device),
         torch.arange(width, dtype=out.dtype, device=out.device),
         indexing="ij",
     )
-    active = p >= float(accept_th)
-    if max_emitters is not None:
-        active = _topk_mask(p, active, max_emitters=int(max_emitters))
+    active = p > float(accept_threshold)
     if not bool(active.any()):
         return _empty_emitters(device=out.device)
 
@@ -99,12 +120,16 @@ def decode_legacy_smlm_emitters(
     col_ix = active.nonzero(as_tuple=False)[:, 2]
     z = out[batch_ix, SMLMOutputChannels.z_mu, row_ix, col_ix]
     photons = out[batch_ix, SMLMOutputChannels.photons_mu, row_ix, col_ix]
+    sigma_z = out[batch_ix, SMLMOutputChannels.z_sigma, row_ix, col_ix]
+    sigma_photons = out[batch_ix, SMLMOutputChannels.photons_sigma, row_ix, col_ix]
     if z_scale is not None:
         scale = abs(float(z_scale))
         scale_nm = scale * 1000.0 if scale <= 10.0 else scale
         z = z * scale_nm
+        sigma_z = sigma_z * scale_nm
     if photon_scale is not None:
         photons = photons * float(photon_scale)
+        sigma_photons = sigma_photons * float(photon_scale)
     x = cols[row_ix, col_ix] + 0.5 + out[batch_ix, SMLMOutputChannels.x_mu, row_ix, col_ix]
     y = rows[row_ix, col_ix] + 0.5 + out[batch_ix, SMLMOutputChannels.y_mu, row_ix, col_ix]
     return LegacyEmitterSet(
@@ -122,6 +147,8 @@ def decode_legacy_smlm_emitters(
         .detach()
         .cpu()
         .to(dtype=torch.float32),
+        sigma_z_nm=sigma_z.detach().cpu().to(dtype=torch.float32),
+        sigma_photons=sigma_photons.detach().cpu().to(dtype=torch.float32),
     )
 
 
@@ -167,6 +194,8 @@ def decode_legacy_targets(
         xyz_px_nm=torch.stack((x, y, z), dim=1).detach().cpu().to(dtype=torch.float32),
         photons=photons.detach().cpu().to(dtype=torch.float32),
         sigma_xy_px=torch.zeros((int(values.shape[0]), 2), dtype=torch.float32),
+        sigma_z_nm=torch.zeros((int(values.shape[0]),), dtype=torch.float32),
+        sigma_photons=torch.zeros((int(values.shape[0]),), dtype=torch.float32),
     )
 
 
@@ -239,31 +268,6 @@ def evaluate_legacy_localizations(
     )
 
 
-def _aggregation_fn(name: str) -> Callable[[torch.Tensor, torch.Tensor], torch.Tensor]:
-    key = str(name or "norm_sum")
-    if key == "sum":
-        return torch.add
-    if key == "max":
-        return torch.max
-    if key == "norm_sum":
-        return lambda left, right: torch.clamp(torch.add(left, right), 0.0, 1.0)
-    raise ValueError(f"unsupported spatial integration aggregation: {name!r}")
-
-
-def _topk_mask(p: torch.Tensor, active: torch.Tensor, *, max_emitters: int) -> torch.Tensor:
-    if int(max_emitters) <= 0:
-        return torch.zeros_like(active)
-    limited = torch.zeros_like(active)
-    for batch_idx in range(int(p.shape[0])):
-        values = torch.where(active[batch_idx], p[batch_idx], torch.full_like(p[batch_idx], -torch.inf))
-        keep = min(int(max_emitters), int(active[batch_idx].sum().item()))
-        if keep <= 0:
-            continue
-        indices = torch.topk(values.reshape(-1), k=keep).indices
-        limited[batch_idx].reshape(-1)[indices] = True
-    return limited
-
-
 def _empty_emitters(*, device: torch.device) -> LegacyEmitterSet:
     return LegacyEmitterSet(
         batch_index=torch.empty((0,), dtype=torch.long, device="cpu"),
@@ -271,14 +275,21 @@ def _empty_emitters(*, device: torch.device) -> LegacyEmitterSet:
         xyz_px_nm=torch.empty((0, 3), dtype=torch.float32, device="cpu"),
         photons=torch.empty((0,), dtype=torch.float32, device="cpu"),
         sigma_xy_px=torch.empty((0, 2), dtype=torch.float32, device="cpu"),
+        sigma_z_nm=torch.empty((0,), dtype=torch.float32, device="cpu"),
+        sigma_photons=torch.empty((0,), dtype=torch.float32, device="cpu"),
     )
 
 
 __all__ = [
+    "LITELOC_ADJACENT_THRESHOLD",
+    "LITELOC_CANDIDATE_THRESHOLD",
+    "LITELOC_EVAL_THRESHOLD",
+    "LITELOC_FORMAL_INFER_THRESHOLD",
     "LegacyEmitterSet",
     "LegacyEvalMetrics",
-    "decode_legacy_smlm_emitters",
+    "decode_liteloc_eval_emitters",
+    "decode_liteloc_formal_infer_emitters",
     "decode_legacy_targets",
     "evaluate_legacy_localizations",
-    "spatial_integration_probability",
+    "liteloc_spatial_integration_probability",
 ]

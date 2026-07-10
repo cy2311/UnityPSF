@@ -38,6 +38,28 @@ def prediction_fieldnames(path: str | Path) -> list[str]:
         return list(reader.fieldnames or [])
 
 
+def prediction_attributes(path: str | Path) -> dict[str, object]:
+    path = Path(path)
+    if not is_h5_path(path):
+        return {}
+    with h5py.File(path, "r") as handle:
+        out: dict[str, object] = {}
+        for key, value in handle.attrs.items():
+            if key in {"columns_json", "count"}:
+                continue
+            if isinstance(value, bytes):
+                value = value.decode("utf-8")
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
+            elif hasattr(value, "item"):
+                value = value.item()
+            out[str(key)] = value
+        return out
+
+
 def iter_prediction_rows(path: str | Path, *, chunk_size: int = 65536):
     path = Path(path)
     if is_h5_path(path):
@@ -101,11 +123,15 @@ class H5PredictionWriter:
         fieldnames: Iterable[str],
         chunk_size: int = 65536,
         compression: str | None = "lzf",
+        schema: str = "infer_recon_predictions_h5_v0.1",
+        attributes: dict[str, object] | None = None,
     ) -> None:
         self.path = Path(path)
         self.fieldnames = list(fieldnames)
         self.chunk_size = max(int(chunk_size), 1)
         self.compression = compression
+        self.schema = str(schema)
+        self.attributes = dict(attributes or {})
         self.handle: h5py.File | None = None
         self.group: h5py.Group | None = None
         self.count = 0
@@ -113,8 +139,10 @@ class H5PredictionWriter:
     def __enter__(self) -> "H5PredictionWriter":
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.handle = h5py.File(self.path, "w")
-        self.handle.attrs["schema"] = "infer_recon_predictions_h5_v0.1"
+        self.handle.attrs["schema"] = self.schema
         self.handle.attrs["columns_json"] = json.dumps(self.fieldnames)
+        for key, value in self.attributes.items():
+            self.handle.attrs[str(key)] = json.dumps(value) if isinstance(value, (dict, list, tuple)) else value
         self.group = self.handle.create_group("locs")
         for column in self.fieldnames:
             self.group.create_dataset(
@@ -151,7 +179,10 @@ class H5PredictionWriter:
         self.count = stop
 
 
-def _read_h5_render_arrays(path: Path, prob_threshold: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+def _read_h5_render_arrays(
+    path: Path,
+    prob_threshold: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     with h5py.File(path, "r") as handle:
         group = handle["locs"]
         missing = [key for key in ("x_px", "y_px") if key not in group]
@@ -161,52 +192,70 @@ def _read_h5_render_arrays(path: Path, prob_threshold: float) -> tuple[np.ndarra
         keep = prob >= float(prob_threshold)
         x = np.asarray(group["x_px"][:], dtype=np.float32)[keep]
         y = np.asarray(group["y_px"][:], dtype=np.float32)[keep]
-        z = np.asarray(group["z"][:] if "z" in group else np.zeros(group["x_px"].shape, dtype=np.float32), dtype=np.float32)[keep]
+        z_key = "z_nm" if "z_nm" in group else "z"
+        z = np.asarray(group[z_key][:] if z_key in group else np.zeros(group["x_px"].shape, dtype=np.float32), dtype=np.float32)[keep]
         prob = prob[keep]
-        x_sig = np.asarray(group["x_sig"][:], dtype=np.float32)[keep] if "x_sig" in group else None
-        y_sig = np.asarray(group["y_sig"][:], dtype=np.float32)[keep] if "y_sig" in group else None
-    return x, y, z, prob, x_sig, y_sig
+        photon = np.asarray(group["photon"][:], dtype=np.float32)[keep] if "photon" in group else None
+        x_sig_key = "x_sig_px" if "x_sig_px" in group else "x_sig"
+        y_sig_key = "y_sig_px" if "y_sig_px" in group else "y_sig"
+        x_sig = np.asarray(group[x_sig_key][:], dtype=np.float32)[keep] if x_sig_key in group else None
+        y_sig = np.asarray(group[y_sig_key][:], dtype=np.float32)[keep] if y_sig_key in group else None
+    return x, y, z, prob, photon, x_sig, y_sig
 
 
-def _read_csv_render_arrays(path: Path, prob_threshold: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+def _read_csv_render_arrays(
+    path: Path,
+    prob_threshold: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     xs: list[float] = []
     ys: list[float] = []
     zs: list[float] = []
     probs: list[float] = []
+    photons: list[float] = []
     x_sigs: list[float] = []
     y_sigs: list[float] = []
     if path.stat().st_size == 0:
         empty = np.asarray([], dtype=np.float32)
-        return empty, empty, empty, empty, None, None
+        return empty, empty, empty, empty, None, None, None
     with path.open("r", newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        has_x_sig = "x_sig" in (reader.fieldnames or [])
-        has_y_sig = "y_sig" in (reader.fieldnames or [])
+        source_fields = set(reader.fieldnames or [])
+        x_sig_key = "x_sig_px" if "x_sig_px" in source_fields else "x_sig"
+        y_sig_key = "y_sig_px" if "y_sig_px" in source_fields else "y_sig"
+        has_x_sig = x_sig_key in source_fields
+        has_y_sig = y_sig_key in source_fields
+        has_photon = "photon" in source_fields
         for row in reader:
             prob = float(row.get("prob", 1.0) or 1.0)
             if prob < prob_threshold:
                 continue
             xs.append(float(row["x_px"]))
             ys.append(float(row["y_px"]))
-            zs.append(float(row.get("z", 0.0) or 0.0))
+            zs.append(float(row.get("z_nm", row.get("z", 0.0)) or 0.0))
             probs.append(prob)
+            if has_photon:
+                photons.append(float(row.get("photon", 0.0) or 0.0))
             if has_x_sig:
-                value = row.get("x_sig", "")
+                value = row.get(x_sig_key, "")
                 x_sigs.append(float(value) if value not in {"", None} else float("nan"))
             if has_y_sig:
-                value = row.get("y_sig", "")
+                value = row.get(y_sig_key, "")
                 y_sigs.append(float(value) if value not in {"", None} else float("nan"))
     return (
         np.asarray(xs, dtype=np.float32),
         np.asarray(ys, dtype=np.float32),
         np.asarray(zs, dtype=np.float32),
         np.asarray(probs, dtype=np.float32),
+        np.asarray(photons, dtype=np.float32) if has_photon else None,
         np.asarray(x_sigs, dtype=np.float32) if has_x_sig else None,
         np.asarray(y_sigs, dtype=np.float32) if has_y_sig else None,
     )
 
 
-def read_render_arrays(path: str | Path, prob_threshold: float) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
+def read_render_arrays(
+    path: str | Path,
+    prob_threshold: float,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None, np.ndarray | None]:
     path = Path(path)
     if is_h5_path(path):
         return _read_h5_render_arrays(path, prob_threshold)

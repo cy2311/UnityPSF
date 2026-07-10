@@ -13,12 +13,59 @@ SRC_ROOT = Path(__file__).resolve().parents[3]
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from neptune_v03.infer_recon.predictions_io import H5PredictionWriter, default_predictions_path, is_h5_path, iter_prediction_rows, prediction_fieldnames
+from neptune_v03.infer_recon.predictions_io import (
+    H5PredictionWriter,
+    default_predictions_path,
+    is_h5_path,
+    iter_prediction_rows,
+    prediction_attributes,
+    prediction_fieldnames,
+)
 from neptune_v03.infer_recon.filter.filter import FilterConfig, compute_locprec_xy_nm
 from neptune_v03.infer_recon.standard import camera_pixels_from_runtime, read_json, write_json
 
 
-COMPACT_RENDER_COLUMNS = ("frame", "x_px", "y_px", "z", "photon", "prob", "x_sig", "y_sig", "locprec_xy_nm")
+COMPACT_RENDER_COLUMNS = (
+    "frame",
+    "x_px",
+    "y_px",
+    "x_nm",
+    "y_nm",
+    "x_nm_full",
+    "y_nm_full",
+    "z",
+    "z_nm",
+    "photon",
+    "prob",
+    "x_sig",
+    "y_sig",
+    "x_sig_px",
+    "y_sig_px",
+    "x_sig_nm",
+    "y_sig_nm",
+    "z_sig",
+    "z_sig_nm",
+    "photon_sig",
+    "x_offset_px",
+    "y_offset_px",
+    "x_offset_nm",
+    "y_offset_nm",
+    "locprec_xy_nm",
+    "fit_status",
+    "postfit_status",
+    "LLrel",
+    "llrel",
+    "logLikelihood",
+    "log_likelihood",
+    "negative_log_likelihood",
+    "PSFxpix",
+    "PSFypix",
+    "PSFxnm",
+    "PSFynm",
+    "psf_x_nm",
+    "psf_y_nm",
+    "psf_xy_nm",
+)
 
 
 def _optional_float(value: object) -> float | None:
@@ -85,6 +132,10 @@ def _write_filtered_rows_streaming(
         summary["missing_llrel_for_requested_gate"] = 0
     if config.psf_xy_nm_max is not None:
         summary["missing_psf_xy_nm_for_requested_gate"] = 0
+    if config.x_sig_px_max is not None:
+        summary["missing_x_sig_for_requested_gate"] = 0
+    if config.y_sig_px_max is not None:
+        summary["missing_y_sig_for_requested_gate"] = 0
 
     def _iter_filtered_rows():
         for row in rows_iter:
@@ -126,6 +177,10 @@ def _write_filtered_rows_streaming(
                 summary["missing_llrel_for_requested_gate"] += 1
             if config.psf_xy_nm_max is not None and psf_xy_nm is None:
                 summary["missing_psf_xy_nm_for_requested_gate"] += 1
+            if config.x_sig_px_max is not None and _optional_float(row_out.get("x_sig")) is None:
+                summary["missing_x_sig_for_requested_gate"] += 1
+            if config.y_sig_px_max is not None and _optional_float(row_out.get("y_sig")) is None:
+                summary["missing_y_sig_for_requested_gate"] += 1
 
             if config.locprec_xy_nm_max is not None and (locprec is None or locprec > float(config.locprec_xy_nm_max)):
                 continue
@@ -138,12 +193,34 @@ def _write_filtered_rows_streaming(
             if config.psf_xy_nm_max is not None and (psf_xy_nm is None or psf_xy_nm > float(config.psf_xy_nm_max)):
                 continue
             summary["after_psf_xy_nm"] += 1
+
+            if config.x_sig_px_max is not None:
+                x_sig = _optional_float(row_out.get("x_sig"))
+                if x_sig is None or abs(x_sig) > float(config.x_sig_px_max):
+                    continue
+            summary["after_x_sig_px"] = summary.get("after_x_sig_px", 0) + 1
+
+            if config.y_sig_px_max is not None:
+                y_sig = _optional_float(row_out.get("y_sig"))
+                if y_sig is None or abs(y_sig) > float(config.y_sig_px_max):
+                    continue
+            summary["after_y_sig_px"] = summary.get("after_y_sig_px", 0) + 1
+
             summary["total_out"] += 1
             yield {key: row_out.get(key, "") for key in fieldnames}
 
     if is_h5_path(output_predictions):
         buffered_rows: list[dict[str, object]] = []
-        with H5PredictionWriter(output_predictions, fieldnames=fieldnames) as writer:
+        source_attributes = prediction_attributes(predictions)
+        source_schema = str(source_attributes.pop("schema", "infer_recon_predictions_h5_v0.1"))
+        source_attributes["derived_kind"] = "probability_filtered_localizations"
+        source_attributes["source_predictions"] = str(predictions)
+        with H5PredictionWriter(
+            output_predictions,
+            fieldnames=fieldnames,
+            schema=source_schema,
+            attributes=source_attributes,
+        ) as writer:
             for filtered_row in _iter_filtered_rows():
                 buffered_rows.append(filtered_row)
                 if len(buffered_rows) >= 65536:
@@ -172,6 +249,8 @@ def _filter_config_from_args(args: argparse.Namespace) -> FilterConfig:
         locprec_xy_nm_max=args.locprec_xy_nm_max,
         photon_min=getattr(args, "photon_min", None),
         photon_max=getattr(args, "photon_max", None),
+        x_sig_px_max=getattr(args, "x_sig_px_max", None),
+        y_sig_px_max=getattr(args, "y_sig_px_max", None),
         llrel_min=args.llrel_min,
         psf_xy_nm_max=args.psf_xy_nm_max,
         require_fit_status=bool(getattr(args, "require_fit_status", False)),
@@ -205,10 +284,14 @@ def _build_render_command(
         str(args.spot_radius_nm),
         "--renderer",
         str(args.renderer),
+        "--render-weight",
+        str(args.render_weight),
         "--gamma",
         str(args.gamma),
-        "--scale-percentile",
-        str(args.scale_percentile),
+        "--display-mode",
+        str(args.display_mode),
+        "--display-imax-min",
+        str(args.display_imax_min),
         "--brightness",
         str(args.brightness),
         "--radius-mode",
@@ -224,12 +307,16 @@ def _build_render_command(
         "--uncertainty-bin-size-px",
         str(args.uncertainty_bin_size_px),
         "--z-min",
-        str(args.z_min),
+        str(args.z_min_nm),
         "--z-max",
-        str(args.z_max),
+        str(args.z_max_nm),
         "--suffix",
         str(args.suffix),
     ]
+    if args.display_imax is not None:
+        cmd.extend(["--display-imax", str(args.display_imax)])
+    if args.normalization_fov:
+        cmd.extend(["--normalization-fov", str(args.normalization_fov)])
     if args.width_px is not None:
         cmd.extend(["--width-px", str(args.width_px)])
     if args.height_px is not None:
@@ -246,30 +333,36 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--width-px", type=int, default=None)
     parser.add_argument("--height-px", type=int, default=None)
     parser.add_argument("--filter-profile", choices=["basic", "strict"], default="basic")
-    parser.add_argument("--prob-min", type=float, default=0.90)
+    parser.add_argument("--prob-min", type=float, default=0.70)
     parser.add_argument("--frame-min", type=int, default=None)
     parser.add_argument("--frame-max", type=int, default=None)
     parser.add_argument("--locprec-xy-nm-min", type=float, default=None)
     parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
     parser.add_argument("--photon-min", type=float, default=None)
     parser.add_argument("--photon-max", type=float, default=None)
+    parser.add_argument("--x-sig-px-max", type=float, default=None)
+    parser.add_argument("--y-sig-px-max", type=float, default=None)
     parser.add_argument("--llrel-min", type=float, default=None)
     parser.add_argument("--psf-xy-nm-max", type=float, default=None)
     parser.add_argument("--require-fit-status", action="store_true")
-    parser.add_argument("--render-pixel-nm", type=float, default=10.0)
-    parser.add_argument("--spot-radius-nm", type=float, default=45.0)
+    parser.add_argument("--render-pixel-nm", type=float, default=20.0)
+    parser.add_argument("--spot-radius-nm", type=float, default=28.0)
     parser.add_argument("--renderer", choices=["subpixel", "integrated_gaussian", "liteloc_style"], default="integrated_gaussian")
+    parser.add_argument("--render-weight", choices=["count", "photon", "probability"], default="count")
     parser.add_argument("--gamma", type=float, default=1.0)
-    parser.add_argument("--scale-percentile", type=float, default=99.7)
+    parser.add_argument("--display-mode", choices=["quantile", "fixed_imax"], default="quantile")
+    parser.add_argument("--display-imax", type=float, default=None)
+    parser.add_argument("--display-imax-min", type=float, default=-2.5228787452803374)
+    parser.add_argument("--normalization-fov", type=str, default=None)
     parser.add_argument("--brightness", type=float, default=1.0)
-    parser.add_argument("--radius-mode", choices=["fixed", "xy_uncertainty_mean"], default="xy_uncertainty_mean")
-    parser.add_argument("--uncertainty-cap-mode", choices=["fixed", "median10"], default="median10")
+    parser.add_argument("--radius-mode", choices=["fixed", "xy_uncertainty_mean"], default="fixed")
+    parser.add_argument("--uncertainty-cap-mode", choices=["fixed", "median10"], default="fixed")
     parser.add_argument("--uncertainty-scale", type=float, default=1.0)
     parser.add_argument("--uncertainty-min-sigma-px", type=float, default=0.75)
     parser.add_argument("--uncertainty-max-sigma-px", type=float, default=6.0)
     parser.add_argument("--uncertainty-bin-size-px", type=float, default=0.5)
-    parser.add_argument("--z-min", type=float, default=-0.6)
-    parser.add_argument("--z-max", type=float, default=0.6)
+    parser.add_argument("--z-min", "--z-min-nm", dest="z_min_nm", type=float, default=-600.0)
+    parser.add_argument("--z-max", "--z-max-nm", dest="z_max_nm", type=float, default=600.0)
     parser.add_argument("--suffix", type=str, default="filtered_recon")
     parser.add_argument("--filtered-format", choices=["h5", "csv"], default="h5")
     parser.add_argument("--keep-filtered-csv", action="store_true")
@@ -325,6 +418,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "locprec_xy_nm_max": args.locprec_xy_nm_max,
             "photon_min": getattr(args, "photon_min", None),
             "photon_max": getattr(args, "photon_max", None),
+            "x_sig_px_max": getattr(args, "x_sig_px_max", None),
+            "y_sig_px_max": getattr(args, "y_sig_px_max", None),
             "llrel_min": args.llrel_min,
             "psf_xy_nm_max": args.psf_xy_nm_max,
             "require_fit_status": bool(getattr(args, "require_fit_status", False)),

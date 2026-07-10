@@ -35,6 +35,13 @@ MAX_FRAME_ARGS=()
 if [[ -n "${MAX_FRAME:-}" ]]; then
   MAX_FRAME_ARGS=(--max-frame "$MAX_FRAME")
 fi
+DISPLAY_ARGS=(--display-mode "${DISPLAY_MODE:-quantile}" --display-imax-min "${DISPLAY_IMAX_MIN:--2.5228787452803374}")
+if [[ -n "${DISPLAY_IMAX:-}" ]]; then
+  DISPLAY_ARGS+=(--display-imax "$DISPLAY_IMAX")
+fi
+if [[ -n "${NORMALIZATION_FOV:-}" ]]; then
+  DISPLAY_ARGS+=(--normalization-fov "$NORMALIZATION_FOV")
+fi
 
 "$PYTHON" "$NEPTUNE_DIR/scripts/infer/render_union_raw_ratio_bicolor.py" \
   --left-predictions "$LEFT_PREDICTIONS" \
@@ -48,12 +55,17 @@ fi
   --right-crop-left "${RIGHT_CROP_LEFT:-600}" \
   --width-px "${WIDTH_PX:-600}" \
   --height-px "${HEIGHT_PX:-1200}" \
+  --render-pixel-nm "${RENDER_PIXEL_NM:-20.0}" \
+  --spot-radius-nm "${SPOT_RADIUS_NM:-28.0}" \
+  --radius-mode "${RADIUS_MODE:-fixed}" \
+  --render-weight "${RENDER_WEIGHT:-count}" \
   --alignment-mode "${ALIGNMENT_MODE:-auto_translation}" \
   --alignment-bin-px "${ALIGNMENT_BIN_PX:-4.0}" \
   --alignment-max-shift-px "${ALIGNMENT_MAX_SHIFT_PX:-80.0}" \
   --alignment-sample-max "${ALIGNMENT_SAMPLE_MAX:-1000000}" \
   --qc-match-radius-px "${QC_MATCH_RADIUS_PX:-2.0}" \
   --qc-sample-max "${QC_SAMPLE_MAX:-200000}" \
+  "${DISPLAY_ARGS[@]}" \
   "${MAX_FRAME_ARGS[@]}" \
   --device "${DEVICE:-cuda:0}" \
   --suffix "${SUFFIX:-union_raw_ratio_unfiltered_thr040_right_priority}"

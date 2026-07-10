@@ -16,6 +16,12 @@ from scipy.ndimage import gaussian_filter
 from neptune_v03.infer_recon.predictions_io import read_render_arrays
 
 
+DEFAULT_Z_MIN_NM = -600.0
+DEFAULT_Z_MAX_NM = 600.0
+SMAP_GUI_DEFAULT_IMAX_MIN = -3.5
+NEPTUNE_DEFAULT_IMAX_MIN = -2.5228787452803374  # q = 0.997
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Standard subpixel Gaussian reconstruction from localization CSV.")
     parser.add_argument("--predictions", type=Path, required=True)
@@ -24,14 +30,24 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--height-px", type=int, required=True)
     parser.add_argument("--camera-pixel-nm-x", type=float, required=True)
     parser.add_argument("--camera-pixel-nm-y", type=float, required=True)
-    parser.add_argument("--render-pixel-nm", type=float, default=10.0)
-    parser.add_argument("--spot-radius-nm", type=float, default=45.0)
+    parser.add_argument("--render-pixel-nm", type=float, default=20.0)
+    parser.add_argument("--spot-radius-nm", type=float, default=28.0)
     parser.add_argument("--prob-threshold", type=float, default=0.70)
-    parser.add_argument("--z-min", type=float, default=-0.6)
-    parser.add_argument("--z-max", type=float, default=0.6)
-    parser.add_argument("--gamma", type=float, default=0.75)
+    parser.add_argument("--z-min", "--z-min-nm", dest="z_min_nm", type=float, default=DEFAULT_Z_MIN_NM)
+    parser.add_argument("--z-max", "--z-max-nm", dest="z_max_nm", type=float, default=DEFAULT_Z_MAX_NM)
+    parser.add_argument("--render-weight", choices=["count", "photon", "probability"], default="count")
+    parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--brightness", type=float, default=1.0)
-    parser.add_argument("--scale-percentile", type=float, default=99.7)
+    parser.add_argument("--display-mode", choices=["quantile", "fixed_imax"], default="quantile")
+    parser.add_argument("--display-imax", type=float, default=None)
+    parser.add_argument("--display-imax-min", type=float, default=NEPTUNE_DEFAULT_IMAX_MIN)
+    parser.add_argument(
+        "--normalization-fov",
+        type=str,
+        default=None,
+        metavar="X0,Y0,WIDTH,HEIGHT",
+        help="Optional rendered-pixel region used only to estimate display Imax.",
+    )
     parser.add_argument("--chunk-size", type=int, default=200000)
     parser.add_argument("--radius-mode", choices=["fixed", "xy_uncertainty_mean"], default="fixed")
     parser.add_argument("--uncertainty-cap-mode", choices=["fixed", "median10"], default="fixed")
@@ -74,8 +90,106 @@ def _draw_colorbar(path: Path, *, z_min: float, z_max: float, height: int = 512,
     draw = ImageDraw.Draw(canvas)
     draw.text((width + 20, 10), f"z {z_max:.2f}", fill=(0, 0, 0))
     draw.text((width + 20, height - 5), f"z {z_min:.2f}", fill=(0, 0, 0))
-    draw.text((width + 20, height // 2), "um", fill=(0, 0, 0))
+    draw.text((width + 20, height // 2), "nm", fill=(0, 0, 0))
     canvas.save(path)
+
+
+def _resolve_render_weights(
+    *,
+    mode: str,
+    count: int,
+    probability: np.ndarray | None,
+    photon: np.ndarray | None,
+) -> np.ndarray:
+    key = str(mode)
+    if key == "count":
+        return np.ones(int(count), dtype=np.float32)
+    source = probability if key == "probability" else photon if key == "photon" else None
+    if key not in {"probability", "photon"}:
+        raise ValueError(f"Unsupported render_weight={mode!r}")
+    if source is None:
+        raise KeyError(f"predictions must contain {key} values when --render-weight={key}")
+    if int(source.size) != int(count):
+        raise ValueError(f"{key} size must match localization count")
+    return np.clip(np.nan_to_num(source.astype(np.float32, copy=False), nan=0.0), 0.0, None)
+
+
+def _smap_quantile_from_imax_min(imax_min: float) -> float:
+    """Convert SMAP's negative Imax GUI value into a quantile."""
+    value = float(imax_min)
+    if value >= 0:
+        raise ValueError("SMAP quantile Imax mode requires display_imax_min < 0")
+    return float(1.0 - 10.0**value)
+
+
+def _parse_normalization_fov(spec: str | None, *, width: int, height: int) -> tuple[int, int, int, int] | None:
+    if spec is None:
+        return None
+    try:
+        x0, y0, roi_width, roi_height = (int(part.strip()) for part in str(spec).split(","))
+    except ValueError as exc:
+        raise ValueError("normalization_fov must be X0,Y0,WIDTH,HEIGHT") from exc
+    if x0 < 0 or y0 < 0 or roi_width <= 0 or roi_height <= 0 or x0 + roi_width > width or y0 + roi_height > height:
+        raise ValueError(f"normalization_fov {spec!r} is outside rendered image {width}x{height}")
+    return x0, y0, roi_width, roi_height
+
+
+def _display_values(values: np.ndarray, *, imax: float, gamma: float, brightness: float) -> np.ndarray:
+    image = np.clip(float(brightness) * values / max(float(imax), 1e-12), 0.0, 1.0)
+    if float(gamma) > 0 and float(gamma) != 1.0:
+        image = np.power(image, float(gamma))
+    return image.astype(np.float32, copy=False)
+
+
+def _colorize_density_display(
+    density: np.ndarray,
+    linear_rgb: np.ndarray,
+    *,
+    imax: float,
+    gamma: float,
+    brightness: float,
+) -> np.ndarray:
+    """Use linear density as value and accumulated RGB only as chromaticity."""
+    if linear_rgb.ndim != 3 or linear_rgb.shape[:2] != density.shape or linear_rgb.shape[2] != 3:
+        raise ValueError("linear_rgb must have shape (height, width, 3) matching density")
+    peak = np.max(linear_rgb, axis=2, keepdims=True)
+    chromaticity = np.divide(linear_rgb, peak, out=np.zeros_like(linear_rgb), where=peak > 0)
+    value = _display_values(density, imax=imax, gamma=gamma, brightness=brightness)
+    return (chromaticity * value[:, :, None]).astype(np.float32, copy=False)
+
+
+def _normalize_display(
+    density: np.ndarray,
+    *,
+    mode: str,
+    fixed_imax: float | None,
+    imax_min: float,
+    gamma: float,
+    brightness: float,
+    normalize_roi: tuple[int, int, int, int] | None,
+) -> tuple[np.ndarray, float, str]:
+    """Produce a display-only normalized image without modifying linear density."""
+    reference = density
+    if normalize_roi is not None:
+        x0, y0, width, height = normalize_roi
+        reference = density[y0 : y0 + height, x0 : x0 + width]
+    finite = reference[np.isfinite(reference)]
+    if str(mode) == "fixed_imax":
+        if fixed_imax is None or float(fixed_imax) <= 0:
+            raise ValueError("display_mode=fixed_imax requires --display-imax > 0")
+        imax = float(fixed_imax)
+        source = "fixed_imax"
+    elif str(mode) == "quantile":
+        quantile = _smap_quantile_from_imax_min(float(imax_min))
+        imax = float(np.quantile(finite, quantile)) if finite.size else 0.0
+        if not np.isfinite(imax) or imax <= 0:
+            imax = float(np.max(finite)) if finite.size else 1.0
+        if not np.isfinite(imax) or imax <= 0:
+            imax = 1.0
+        source = "smap_quantile"
+    else:
+        raise ValueError(f"Unsupported display_mode={mode!r}")
+    return _display_values(density, imax=imax, gamma=gamma, brightness=brightness), imax, source
 
 
 def _add_bilinear(canvas: np.ndarray, x: np.ndarray, y: np.ndarray, colors: np.ndarray) -> None:
@@ -92,12 +206,12 @@ def _add_bilinear(canvas: np.ndarray, x: np.ndarray, y: np.ndarray, colors: np.n
             if not np.any(keep):
                 continue
             weight = (wx[keep] * wy[keep]).astype(np.float32, copy=False)
-            for channel in range(3):
+            for channel in range(canvas.shape[2]):
                 np.add.at(canvas[:, :, channel], (iy[keep], ix[keep]), colors[keep, channel] * weight)
 
 
 def _fixed_sigma_render_px(*, spot_radius_nm: float, render_pixel_nm: float) -> float:
-    return max((float(spot_radius_nm) / float(render_pixel_nm)) / 2.0, 0.75)
+    return max((float(spot_radius_nm) / float(render_pixel_nm)) / 2.0, 0.7)
 
 
 def _resolve_sigma_render_px(
@@ -163,7 +277,7 @@ def _render_grouped_gaussians(
     chunk_size: int,
     bin_size_px: float,
 ) -> np.ndarray:
-    canvas = np.zeros((height, width, 3), dtype=np.float32)
+    canvas = np.zeros((height, width, colors.shape[1]), dtype=np.float32)
     if x_render.size == 0:
         return canvas
     if np.allclose(sigmas_px, sigmas_px[0]):
@@ -171,7 +285,7 @@ def _render_grouped_gaussians(
             stop = min(x_render.size, start + int(chunk_size))
             _add_bilinear(canvas, x_render[start:stop], y_render[start:stop], colors[start:stop])
         sigma = float(sigmas_px[0])
-        for channel in range(3):
+        for channel in range(canvas.shape[2]):
             canvas[:, :, channel] = gaussian_filter(canvas[:, :, channel], sigma=sigma, mode="constant")
         return canvas
 
@@ -188,19 +302,27 @@ def _render_grouped_gaussians(
         for start in range(0, keep.size, int(chunk_size)):
             ix = keep[start : start + int(chunk_size)]
             _add_bilinear(tmp, x_render[ix], y_render[ix], colors[ix])
-        for channel in range(3):
+        for channel in range(out.shape[2]):
             out[:, :, channel] += gaussian_filter(tmp[:, :, channel], sigma=float(sigma), mode="constant")
     return out
 
 
 def render(args: argparse.Namespace) -> dict[str, object]:
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    x_px, y_px, z, prob, x_sig_px, y_sig_px = read_render_arrays(args.predictions, float(args.prob_threshold))
+    x_px, y_px, z_nm, prob, photon, x_sig_px, y_sig_px = read_render_arrays(args.predictions, float(args.prob_threshold))
     width = max(1, int(np.ceil(args.width_px * args.camera_pixel_nm_x / args.render_pixel_nm)))
     height = max(1, int(np.ceil(args.height_px * args.camera_pixel_nm_y / args.render_pixel_nm)))
     x_render = x_px * float(args.camera_pixel_nm_x) / float(args.render_pixel_nm)
     y_render = y_px * float(args.camera_pixel_nm_y) / float(args.render_pixel_nm)
-    colors = _iris_color(z, float(args.z_min), float(args.z_max)) * prob[:, None]
+    render_weights = _resolve_render_weights(
+        mode=str(args.render_weight),
+        count=int(x_render.size),
+        probability=prob,
+        photon=photon,
+    )
+    rgb_colors = _iris_color(z_nm, float(args.z_min_nm), float(args.z_max_nm)) * render_weights[:, None]
+    # Channel zero is the quantitative, z-independent localization density.
+    colors = np.concatenate((render_weights[:, None], rgb_colors), axis=1)
     sigmas_px = _resolve_sigma_render_px(
         radius_mode=str(args.radius_mode),
         count=int(x_render.size),
@@ -215,7 +337,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         uncertainty_max_sigma_px=float(args.uncertainty_max_sigma_px),
         uncertainty_cap_mode=str(getattr(args, "uncertainty_cap_mode", "fixed")),
     )
-    canvas = _render_grouped_gaussians(
+    rendered = _render_grouped_gaussians(
         width=width,
         height=height,
         x_render=x_render,
@@ -225,22 +347,41 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         chunk_size=int(args.chunk_size),
         bin_size_px=float(args.uncertainty_bin_size_px),
     )
-    positive = canvas[canvas > 0]
-    scale = float(np.percentile(positive, float(args.scale_percentile))) if positive.size else 1.0
-    image = np.clip(float(args.brightness) * canvas / max(scale, 1e-6), 0.0, 1.0)
-    if float(args.gamma) > 0:
-        image = np.power(image, float(args.gamma))
+    density = rendered[:, :, 0]
+    linear_rgb = rendered[:, :, 1:]
+    normalization_fov = _parse_normalization_fov(str(args.normalization_fov) if args.normalization_fov else None, width=width, height=height)
+    _, imax, imax_source = _normalize_display(
+        density,
+        mode=str(args.display_mode),
+        fixed_imax=args.display_imax,
+        imax_min=float(args.display_imax_min),
+        gamma=float(args.gamma),
+        brightness=float(args.brightness),
+        normalize_roi=normalization_fov,
+    )
+    image = _colorize_density_display(
+        density,
+        linear_rgb,
+        imax=imax,
+        gamma=float(args.gamma),
+        brightness=float(args.brightness),
+    )
     rgb = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     png_path = args.output_dir / f"reconstruction_{args.suffix}.png"
     tiff_path = args.output_dir / f"reconstruction_{args.suffix}.tiff"
+    linear_density_path = args.output_dir / f"reconstruction_{args.suffix}_density_linear_float32.tiff"
+    linear_rgb_path = args.output_dir / f"reconstruction_{args.suffix}_rgb_linear_float32.tiff"
     colorbar_path = args.output_dir / f"reconstruction_{args.suffix}_z_colorbar.png"
     Image.fromarray(rgb, mode="RGB").save(png_path)
     tifffile.imwrite(tiff_path, rgb, photometric="rgb")
-    _draw_colorbar(colorbar_path, z_min=float(args.z_min), z_max=float(args.z_max))
+    tifffile.imwrite(linear_density_path, density.astype(np.float32, copy=False))
+    tifffile.imwrite(linear_rgb_path, linear_rgb.astype(np.float32, copy=False), photometric="rgb")
+    _draw_colorbar(colorbar_path, z_min=float(args.z_min_nm), z_max=float(args.z_max_nm))
     summary = {
-        "renderer": "infer_recon_subpixel_gaussian_v1",
+        "renderer": "infer_recon_subpixel_gaussian_v2_smap_display_contract",
         "predictions": str(args.predictions),
         "rendered_localizations": int(x_render.size),
+        "render_weight": str(args.render_weight),
         "prob_threshold": float(args.prob_threshold),
         "render_pixel_nm": float(args.render_pixel_nm),
         "spot_radius_nm": float(args.spot_radius_nm),
@@ -253,12 +394,21 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         "sigma_render_px_mean": float(sigmas_px.mean()) if sigmas_px.size else 0.0,
         "sigma_render_px_min": float(sigmas_px.min()) if sigmas_px.size else 0.0,
         "sigma_render_px_max": float(sigmas_px.max()) if sigmas_px.size else 0.0,
-        "z_min": float(args.z_min),
-        "z_max": float(args.z_max),
+        "z_unit": "nm",
+        "z_min_nm": float(args.z_min_nm),
+        "z_max_nm": float(args.z_max_nm),
         "width": int(width),
         "height": int(height),
         "gamma": float(args.gamma),
-        "scale_percentile": float(args.scale_percentile),
+        "brightness": float(args.brightness),
+        "display_mode": str(args.display_mode),
+        "display_imax": float(imax),
+        "display_imax_source": imax_source,
+        "display_imax_min": float(args.display_imax_min),
+        "display_quantile": _smap_quantile_from_imax_min(float(args.display_imax_min)) if str(args.display_mode) == "quantile" else None,
+        "normalization_fov_rendered_px": list(normalization_fov) if normalization_fov is not None else None,
+        "linear_density_path": str(linear_density_path),
+        "linear_rgb_path": str(linear_rgb_path),
         "png_path": str(png_path),
         "tiff_path": str(tiff_path),
         "colorbar_path": str(colorbar_path),

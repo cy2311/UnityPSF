@@ -15,8 +15,8 @@
 #
 # Main outputs:
 #   output/<RUN_TAG>/<RUN_TAG>_<train_jobid>/
-#   output/<RUN_TAG>_<train_jobid>_left_infer_recon_full8000_roi96_valid80_cut8_prob090_no_locprec/
-#   output/<RUN_TAG>_<train_jobid>_right_infer_recon_full8000_roi96_valid80_cut8_prob090_no_locprec/
+#   output/<RUN_TAG>_<train_jobid>_left_infer_recon_full8000_roi96_valid80_cut8_prob070_smap_fixed14nm/
+#   output/<RUN_TAG>_<train_jobid>_right_infer_recon_full8000_roi96_valid80_cut8_prob070_smap_fixed14nm/
 #   output/<RUN_TAG>_<train_jobid>_union_raw_ratio_bicolor_unfiltered_thr040_right_priority/
 
 set -euo pipefail
@@ -170,8 +170,8 @@ else
 fi
 
 RUN_BASENAME="$(basename "$RUN_DIR")"
-LEFT_RUN_NAME="${LEFT_RUN_NAME:-${RUN_BASENAME}_left_infer_recon_full8000_roi96_valid80_cut8_prob090_no_locprec}"
-RIGHT_RUN_NAME="${RIGHT_RUN_NAME:-${RUN_BASENAME}_right_infer_recon_full8000_roi96_valid80_cut8_prob090_no_locprec}"
+LEFT_RUN_NAME="${LEFT_RUN_NAME:-${RUN_BASENAME}_left_infer_recon_full8000_roi96_valid80_cut8_prob070_smap_fixed14nm}"
+RIGHT_RUN_NAME="${RIGHT_RUN_NAME:-${RUN_BASENAME}_right_infer_recon_full8000_roi96_valid80_cut8_prob070_smap_fixed14nm}"
 DUAL_RUN_NAME="${DUAL_RUN_NAME:-${RUN_BASENAME}_union_raw_ratio_bicolor_unfiltered_thr040_right_priority}"
 
 LEFT_OUTPUT_DIR="${LEFT_OUTPUT_DIR:-$NEPTUNE_DIR/output/$LEFT_RUN_NAME}"
@@ -194,10 +194,17 @@ submit_channel_infer() {
     RUN_NAME="$run_name" \
     ROI_SIZE="${ROI_SIZE:-96}" \
     VALID_ROI_SIZE="${VALID_ROI_SIZE:-80}" \
-    PROB_THRESHOLD="${PROB_THRESHOLD:-0.70}" \
-    RAW_TH="${RAW_TH:-0.5}" \
-    SPLIT_TH="${SPLIT_TH:-0.6}" \
-    FILTER_PROB_MIN="${FILTER_PROB_MIN:-0.90}" \
+    FILTER_PROB_MIN="${FILTER_PROB_MIN:-0.70}" \
+    RENDER_PIXEL_NM="${RENDER_PIXEL_NM:-20.0}" \
+    SPOT_RADIUS_NM="${SPOT_RADIUS_NM:-28.0}" \
+    RADIUS_MODE="${RADIUS_MODE:-fixed}" \
+    DISPLAY_MODE="${DISPLAY_MODE:-quantile}" \
+    DISPLAY_IMAX="${DISPLAY_IMAX:-}" \
+    DISPLAY_IMAX_MIN="${DISPLAY_IMAX_MIN:--2.5228787452803374}" \
+    NORMALIZATION_FOV="${NORMALIZATION_FOV:-}" \
+    RCC_DRIFT_ENABLED="${RCC_DRIFT_ENABLED:-true}" \
+    RCC_FRAME_BLOCK_SIZE="${RCC_FRAME_BLOCK_SIZE:-500}" \
+    RCC_PIXEL_NM="${RCC_PIXEL_NM:-50.0}" \
     LEFT_DOMAIN_CROP_LEFT="$LEFT_DOMAIN_CROP_LEFT" \
     LEFT_DOMAIN_CROP_TOP="$LEFT_DOMAIN_CROP_TOP" \
     LEFT_DOMAIN_CROP_WIDTH="$LEFT_DOMAIN_CROP_WIDTH" \
@@ -222,12 +229,16 @@ if [[ "$CHANNEL_MODE" == "dual" ]]; then
   dual_job="$(submit_export "$dual_dependency" "$DUAL_SCRIPT" \
     NEPTUNE_V03_ROOT="$ROOT" \
     SAMPLE_TIFF="$SAMPLE_TIFF" \
-    LEFT_PREDICTIONS="$LEFT_OUTPUT_DIR/left/infer/predictions_merged.h5" \
-    RIGHT_PREDICTIONS="$RIGHT_OUTPUT_DIR/right/infer/predictions_merged.h5" \
+    LEFT_PREDICTIONS="$LEFT_OUTPUT_DIR/left/infer/predictions_degrid_rcc_corrected.h5" \
+    RIGHT_PREDICTIONS="$RIGHT_OUTPUT_DIR/right/infer/predictions_degrid_rcc_corrected.h5" \
     RUN_NAME="$DUAL_RUN_NAME" \
     RIGHT_CROP_LEFT="$RIGHT_DOMAIN_CROP_LEFT" \
     WIDTH_PX="$LEFT_DOMAIN_CROP_WIDTH" \
     HEIGHT_PX="$LEFT_DOMAIN_CROP_HEIGHT" \
+    DISPLAY_MODE="${DISPLAY_MODE:-quantile}" \
+    DISPLAY_IMAX="${DISPLAY_IMAX:-}" \
+    DISPLAY_IMAX_MIN="${DISPLAY_IMAX_MIN:--2.5228787452803374}" \
+    NORMALIZATION_FOV="${NORMALIZATION_FOV:-}" \
     OUTPUT_DIR="$DUAL_OUTPUT_DIR")"
 fi
 

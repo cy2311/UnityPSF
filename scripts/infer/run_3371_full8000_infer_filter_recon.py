@@ -23,10 +23,16 @@ for path in (ROOT, SRC_ROOT, NEPTUNE_IWAE_ROOT):
 
 from Normalization import build_inference_frame_normalizer
 from neptune_v03.config import load_config
+from neptune_v03.infer_recon.degrid import default_reconstruction_predictions, degrid_predictions_h5
 from neptune_v03.infer_recon.predictions_io import H5PredictionWriter
+from neptune_v03.infer_recon.tiling import (
+    build_liteloc_subfov_tiles,
+    emitter_in_valid_core,
+    tile_local_to_field_coordinates,
+)
 from neptune_v03.localization import build_localization_model_registry, build_localization_runtime_config
 from neptune_v03.localization.conditioning import FullResZernikeConditioning
-from neptune_v03.localization.legacy_decode import decode_legacy_smlm_emitters
+from neptune_v03.localization.legacy_decode import decode_liteloc_formal_infer_emitters
 
 
 RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
@@ -43,13 +49,27 @@ FIELDNAMES = [
     "y_px",
     "x_px_full",
     "y_px_full",
+    "x_nm",
+    "y_nm",
+    "x_nm_full",
+    "y_nm_full",
     "z",
+    "z_nm",
     "photon",
     "prob",
     "x_sig",
     "y_sig",
+    "x_sig_px",
+    "y_sig_px",
+    "x_sig_nm",
+    "y_sig_nm",
     "z_sig",
+    "z_sig_nm",
     "photon_sig",
+    "x_offset_px",
+    "y_offset_px",
+    "x_offset_nm",
+    "y_offset_nm",
     "logLikelihood",
     "log_likelihood",
     "negative_log_likelihood",
@@ -68,6 +88,42 @@ FIELDNAMES = [
 ]
 
 
+def parse_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected boolean value, got {value!r}")
+
+
+def parse_float_list(value: str | None) -> list[float]:
+    if value is None:
+        return []
+    out: list[float] = []
+    text_value = str(value).replace(";", ",")
+    for item in text_value.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        out.append(float(text))
+    return out
+
+
+def unique_prob_values(values: Iterable[float]) -> list[float]:
+    seen: set[int] = set()
+    out: list[float] = []
+    for value in values:
+        key = int(round(float(value) * 1000.0))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(float(value))
+    return out
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="3371 v0.3 full 8000-frame infer -> filter/recon, ROI96 keep80.")
     parser.add_argument("--run-dir", type=Path, default=RUN_3371)
@@ -81,13 +137,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, default=8000)
     parser.add_argument("--roi-size", type=int, default=96)
     parser.add_argument("--valid-roi-size", type=int, default=80)
-    parser.add_argument("--prob-threshold", type=float, default=0.70)
-    parser.add_argument("--raw-th", type=float, default=0.5)
-    parser.add_argument("--split-th", type=float, default=0.6)
-    parser.add_argument("--filter-prob-min", type=float, default=0.90)
+    parser.add_argument("--filter-prob-min", type=float, default=0.70)
+    parser.add_argument("--filter-prob-sweep", type=str, default=None, help="Comma-separated prob_min values, e.g. 0.7,0.8,0.9.")
     parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
-    parser.add_argument("--render-pixel-nm", type=float, default=10.0)
-    parser.add_argument("--spot-radius-nm", type=float, default=45.0)
+    parser.add_argument("--x-sig-px-max", type=float, default=None)
+    parser.add_argument("--y-sig-px-max", type=float, default=None)
+    parser.add_argument("--llrel-min", type=float, default=None)
+    parser.add_argument("--psf-xy-nm-max", type=float, default=None)
+    parser.add_argument("--require-fit-status", action="store_true", default=False)
+    parser.add_argument("--quality-metrics", type=parse_bool, default=False)
+    parser.add_argument("--quality-metric-mode", choices=("moment", "optimize"), default="moment")
+    parser.add_argument("--quality-roi-radius-px", type=int, default=3)
+    parser.add_argument("--degrid", type=parse_bool, default=True)
+    parser.add_argument("--degrid-rescale-bins", type=int, default=20)
+    parser.add_argument("--degrid-threshold", type=float, default=0.01)
+    parser.add_argument("--degrid-min-bin-count", type=int, default=32)
+    parser.add_argument("--rcc-drift", type=parse_bool, default=True)
+    parser.add_argument("--rcc-frame-block-size", type=int, default=500)
+    parser.add_argument("--rcc-pixel-nm", type=float, default=50.0)
+    parser.add_argument("--rcc-sigma-px", type=float, default=1.0)
+    parser.add_argument("--rcc-upsample-factor", type=int, default=10)
+    parser.add_argument("--rcc-max-pair-gap", type=int, default=8)
+    parser.add_argument("--rcc-max-shift-nm", type=float, default=1000.0)
+    parser.add_argument("--rcc-min-pair-correlation", type=float, default=0.02)
+    parser.add_argument("--render-pixel-nm", type=float, default=20.0)
+    parser.add_argument("--spot-radius-nm", type=float, default=28.0)
+    parser.add_argument("--radius-mode", choices=("fixed", "xy_uncertainty_mean"), default="fixed")
+    parser.add_argument("--display-mode", choices=("quantile", "fixed_imax"), default="quantile")
+    parser.add_argument("--display-imax", type=float, default=None)
+    parser.add_argument("--display-imax-min", type=float, default=-2.5228787452803374)
+    parser.add_argument("--normalization-fov", type=str, default=None)
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--left-crop-left", type=int, default=0)
     parser.add_argument("--left-crop-top", type=int, default=0)
@@ -99,46 +178,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-crop-height", type=int, default=1200)
     parser.add_argument("--infer-recon-root", type=Path, default=SRC_ROOT / "neptune_v03" / "infer_recon")
     parser.add_argument("--input-preprocess", choices=("fd_deeploc_recenter", "raw_adu"), default="fd_deeploc_recenter")
+    parser.add_argument("--overwrite-output", action="store_true", default=False)
     parser.add_argument("--infer-amp", action="store_true", default=True)
     parser.add_argument("--no-infer-amp", dest="infer_amp", action="store_false")
     return parser.parse_args()
 
 
-def build_edgecover_tiles(*, crop_h: int, crop_w: int, context: int, valid: int) -> list[dict[str, int]]:
-    if context < valid:
-        raise ValueError("context must be >= valid")
-    pad = (context - valid) // 2
-    max_patch_y0 = max(0, crop_h - context)
-    max_patch_x0 = max(0, crop_w - context)
-
-    def bounds(length: int) -> list[int]:
-        values = {0, int(length)}
-        values.update(range(valid, int(length), valid))
-        return sorted(values)
-
-    tiles: list[dict[str, int]] = []
-    tile_index = 0
-    for y0, y1 in zip(bounds(crop_h)[:-1], bounds(crop_h)[1:]):
-        for x0, x1 in zip(bounds(crop_w)[:-1], bounds(crop_w)[1:]):
-            patch_y0 = min(max(y0 - pad, 0), max_patch_y0)
-            patch_x0 = min(max(x0 - pad, 0), max_patch_x0)
-            tiles.append(
-                {
-                    "tile_index": tile_index,
-                    "patch_y0": int(patch_y0),
-                    "patch_x0": int(patch_x0),
-                    "keep_y0": int(y0 - patch_y0),
-                    "keep_x0": int(x0 - patch_x0),
-                    "keep_h": int(y1 - y0),
-                    "keep_w": int(x1 - x0),
-                    "valid_y0": int(y0),
-                    "valid_x0": int(x0),
-                    "valid_y1": int(y1),
-                    "valid_x1": int(x1),
-                }
-            )
-            tile_index += 1
-    return tiles
+def assert_output_dir_available(output_dir: Path, *, overwrite: bool) -> None:
+    if bool(overwrite):
+        return
+    if output_dir.exists() and any(output_dir.iterdir()):
+        raise FileExistsError(
+            f"Refusing to overwrite non-empty infer/recon output directory: {output_dir}. "
+            "Use --overwrite-output only for an intentional rerun. "
+            "Phase-0 baseline outputs must be kept immutable and new postprocess experiments "
+            "should use a new output directory."
+        )
 
 
 def iter_blocks(*, n_frames: int, frame_block: int, window: int) -> Iterable[tuple[int, int]]:
@@ -211,6 +266,8 @@ def rows_from_emitters(
     crop_left: int,
     crop_top: int,
     sample_name: str,
+    camera_pixel_nm_x: float,
+    camera_pixel_nm_y: float,
 ) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for idx in range(int(emitters.probability.numel())):
@@ -218,27 +275,54 @@ def rows_from_emitters(
         meta = metas[batch_idx]
         x_patch = float(emitters.xyz_px_nm[idx, 0].item())
         y_patch = float(emitters.xyz_px_nm[idx, 1].item())
-        if not (
-            int(meta["keep_x0"]) <= x_patch < int(meta["keep_x0"]) + int(meta["keep_w"])
-            and int(meta["keep_y0"]) <= y_patch < int(meta["keep_y0"]) + int(meta["keep_h"])
-        ):
+        if not emitter_in_valid_core(x_patch=x_patch, y_patch=y_patch, tile=meta):
             continue
-        x_roi = float(meta["patch_x0"]) + x_patch
-        y_roi = float(meta["patch_y0"]) + y_patch
+        coordinates = tile_local_to_field_coordinates(
+            x_patch=x_patch,
+            y_patch=y_patch,
+            tile=meta,
+            crop_left=int(crop_left),
+            crop_top=int(crop_top),
+        )
+        x_roi = coordinates["x_crop"]
+        y_roi = coordinates["y_crop"]
+        x_full = coordinates["x_full"]
+        y_full = coordinates["y_full"]
+        x_sig_px = float(emitters.sigma_xy_px[idx, 0].item())
+        y_sig_px = float(emitters.sigma_xy_px[idx, 1].item())
+        z_sig_nm = float(emitters.sigma_z_nm[idx].item()) if emitters.sigma_z_nm is not None else None
+        photon_sig = float(emitters.sigma_photons[idx].item()) if emitters.sigma_photons is not None else None
+        x_offset_px = x_roi - np.floor(x_roi) - 0.5
+        y_offset_px = y_roi - np.floor(y_roi) - 0.5
+        z_nm = float(emitters.xyz_px_nm[idx, 2].item())
         rows.append(
             {
                 "frame": int(meta["frame_id"]),
                 "x_px": x_roi,
                 "y_px": y_roi,
-                "x_px_full": x_roi + float(crop_left),
-                "y_px_full": y_roi + float(crop_top),
-                "z": float(emitters.xyz_px_nm[idx, 2].item()),
+                "x_px_full": x_full,
+                "y_px_full": y_full,
+                "x_nm": x_roi * float(camera_pixel_nm_x),
+                "y_nm": y_roi * float(camera_pixel_nm_y),
+                "x_nm_full": x_full * float(camera_pixel_nm_x),
+                "y_nm_full": y_full * float(camera_pixel_nm_y),
+                "z": z_nm,
+                "z_nm": z_nm,
                 "photon": float(emitters.photons[idx].item()),
                 "prob": float(emitters.probability[idx].item()),
-                "x_sig": float(emitters.sigma_xy_px[idx, 0].item()),
-                "y_sig": float(emitters.sigma_xy_px[idx, 1].item()),
-                "z_sig": None,
-                "photon_sig": None,
+                "x_sig": x_sig_px,
+                "y_sig": y_sig_px,
+                "x_sig_px": x_sig_px,
+                "y_sig_px": y_sig_px,
+                "x_sig_nm": x_sig_px * float(camera_pixel_nm_x),
+                "y_sig_nm": y_sig_px * float(camera_pixel_nm_y),
+                "z_sig": z_sig_nm,
+                "z_sig_nm": z_sig_nm,
+                "photon_sig": photon_sig,
+                "x_offset_px": x_offset_px,
+                "y_offset_px": y_offset_px,
+                "x_offset_nm": x_offset_px * float(camera_pixel_nm_x),
+                "y_offset_nm": y_offset_px * float(camera_pixel_nm_y),
                 "logLikelihood": None,
                 "log_likelihood": None,
                 "negative_log_likelihood": None,
@@ -268,14 +352,13 @@ def flush_bucket(
     model: torch.nn.Module,
     device: torch.device,
     infer_amp: bool,
-    raw_th: float,
-    split_th: float,
-    prob_threshold: float,
     photon_scale: float,
     z_scale: float,
     crop_left: int,
     crop_top: int,
     sample_name: str,
+    camera_pixel_nm_x: float,
+    camera_pixel_nm_y: float,
 ) -> int:
     if not patches:
         return 0
@@ -283,15 +366,20 @@ def flush_bucket(
     cond = torch.stack(conds, dim=0).to(device=device, dtype=torch.float32)
     with torch.no_grad(), torch.autocast(device_type="cuda", dtype=torch.float16, enabled=bool(infer_amp) and device.type == "cuda"):
         output = model([batch, cond])
-    emitters = decode_legacy_smlm_emitters(
+    emitters = decode_liteloc_formal_infer_emitters(
         output.float(),
-        raw_th=float(raw_th),
-        split_th=float(split_th),
-        accept_th=float(prob_threshold),
         photon_scale=float(photon_scale),
         z_scale=float(z_scale),
     )
-    rows = rows_from_emitters(emitters, metas=metas, crop_left=crop_left, crop_top=crop_top, sample_name=sample_name)
+    rows = rows_from_emitters(
+        emitters,
+        metas=metas,
+        crop_left=crop_left,
+        crop_top=crop_top,
+        sample_name=sample_name,
+        camera_pixel_nm_x=float(camera_pixel_nm_x),
+        camera_pixel_nm_y=float(camera_pixel_nm_y),
+    )
     writer.append_rows(rows)
     count = len(rows)
     patches.clear()
@@ -319,11 +407,11 @@ def run_side(
     infer_dir = side_dir / "infer"
     infer_dir.mkdir(parents=True, exist_ok=True)
     provider = FullResZernikeConditioning.from_npz(coeff_map)
-    tiles = build_edgecover_tiles(
-        crop_h=int(crop_height),
-        crop_w=int(crop_width),
-        context=int(args.roi_size),
-        valid=int(args.valid_roi_size),
+    tiles = build_liteloc_subfov_tiles(
+        field_height=int(crop_height),
+        field_width=int(crop_width),
+        context_size=int(args.roi_size),
+        valid_core_size=int(args.valid_roi_size),
     )
     runtime_state = {
         "window_size": 3,
@@ -342,8 +430,33 @@ def run_side(
         "roi_size": int(args.roi_size),
         "valid_roi_size": int(args.valid_roi_size),
         "cut_edge_px": int((int(args.roi_size) - int(args.valid_roi_size)) // 2),
+        "spatial_stitching_contract": "liteloc_subfov_overcut_v1",
+        "spatial_boundary_rule": "lower_inclusive_upper_exclusive",
+        "tiling_mode": "edgecover",
+        "decode_contract": "liteloc_formal_infer_nms_v1",
+        "decode_candidate_threshold": 0.3,
+        "decode_adjacent_threshold": 0.6,
+        "decode_accept_threshold": 0.7,
+        "decode_aggregation": "sum",
+        "decode_accept_rule": ">",
         "camera_pixel_nm_x": 101.11,
         "camera_pixel_nm_y": 98.83,
+        "localization_schema": "neptune_v03_localization_v0.2",
+        "localization_units": {
+            "x_px": "camera_pixel",
+            "y_px": "camera_pixel",
+            "x_nm": "nm",
+            "y_nm": "nm",
+            "z": "nm",
+            "z_nm": "nm",
+            "x_sig": "camera_pixel",
+            "y_sig": "camera_pixel",
+            "x_sig_px": "camera_pixel",
+            "y_sig_px": "camera_pixel",
+            "z_sig_nm": "nm",
+            "photon": "photon",
+            "photon_sig": "photon",
+        },
         "source_train_dir": str(args.run_dir),
         "input_preprocess": str(args.input_preprocess),
         "model_input": "recentered_raw_adu" if frame_proc is not None else "raw_adu",
@@ -360,7 +473,15 @@ def run_side(
     pred_path = infer_dir / "predictions_merged.h5"
     total_rows = 0
     started = time.time()
-    with H5PredictionWriter(pred_path, fieldnames=FIELDNAMES) as writer:
+    with H5PredictionWriter(
+        pred_path,
+        fieldnames=FIELDNAMES,
+        schema="infer_recon_predictions_h5_v0.2",
+        attributes={
+            "localization_schema": "neptune_v03_localization_v0.2",
+            "units": runtime_state["localization_units"],
+        },
+    ) as writer:
         for block_idx, (start, stop) in enumerate(iter_blocks(n_frames=n_frames, frame_block=int(args.frame_block), window=3), start=1):
             raw_block = load_tiff_block(args.sample_tiff, start, stop)
             crop = np.ascontiguousarray(
@@ -412,14 +533,13 @@ def run_side(
                             model=model,
                             device=device,
                             infer_amp=bool(args.infer_amp),
-                            raw_th=float(args.raw_th),
-                            split_th=float(args.split_th),
-                            prob_threshold=float(args.prob_threshold),
                             photon_scale=photon_scale,
                             z_scale=z_scale,
                             crop_left=int(crop_left),
                             crop_top=int(crop_top),
                             sample_name=sample_name,
+                            camera_pixel_nm_x=float(runtime_state["camera_pixel_nm_x"]),
+                            camera_pixel_nm_y=float(runtime_state["camera_pixel_nm_y"]),
                         )
             total_rows += flush_bucket(
                 patches=patches,
@@ -429,14 +549,13 @@ def run_side(
                 model=model,
                 device=device,
                 infer_amp=bool(args.infer_amp),
-                raw_th=float(args.raw_th),
-                split_th=float(args.split_th),
-                prob_threshold=float(args.prob_threshold),
                 photon_scale=photon_scale,
                 z_scale=z_scale,
                 crop_left=int(crop_left),
                 crop_top=int(crop_top),
                 sample_name=sample_name,
+                camera_pixel_nm_x=float(runtime_state["camera_pixel_nm_x"]),
+                camera_pixel_nm_y=float(runtime_state["camera_pixel_nm_y"]),
             )
             elapsed = time.time() - started
             print(
@@ -452,62 +571,209 @@ def run_side(
                 flush=True,
             )
 
-    prob_tag = f"prob{int(round(float(args.filter_prob_min) * 100)):03d}"
-    locprec_tag = "no_locprec" if args.locprec_xy_nm_max is None else f"locprec{int(round(float(args.locprec_xy_nm_max)))}"
-    filter_dir = side_dir / f"filter_recon_{prob_tag}_{locprec_tag}"
+    degrid_predictions = None
+    degrid_summary = None
+    degrid_payload = None
+    if bool(args.degrid):
+        degrid_predictions = infer_dir / "predictions_degrid.h5"
+        degrid_summary = infer_dir / "degrid_summary.json"
+        degrid_payload = degrid_predictions_h5(
+            predictions=pred_path,
+            output=degrid_predictions,
+            summary_json=degrid_summary,
+            histogram_png=infer_dir / "degrid_offset_histograms.png",
+            pixel_size_nm_x=float(runtime_state["camera_pixel_nm_x"]),
+            pixel_size_nm_y=float(runtime_state["camera_pixel_nm_y"]),
+            rescale_bins=int(args.degrid_rescale_bins),
+            threshold=float(args.degrid_threshold),
+            min_bin_count=int(args.degrid_min_bin_count),
+        )
+
+    pred_for_filter = default_reconstruction_predictions(
+        raw=pred_path,
+        degrid=infer_dir / "predictions_degrid.h5",
+        degrid_enabled=bool(args.degrid),
+    )
+    reconstruction_coordinate_source = "degrid" if bool(args.degrid) else "raw"
+    rcc_summary = None
+    if bool(args.rcc_drift):
+        if not bool(args.degrid):
+            raise ValueError("standard RCC drift correction requires degrid to be enabled")
+        rcc_script = NEPTUNE_DIR / "scripts" / "analysis" / "run_rcc_drift_diagnostic.py"
+        if not rcc_script.is_file():
+            raise FileNotFoundError(rcc_script)
+        rcc_cmd = [
+            sys.executable,
+            str(rcc_script),
+            "--predictions",
+            str(pred_for_filter),
+            "--output-dir",
+            str(infer_dir),
+            "--frame-block-size",
+            str(args.rcc_frame_block_size),
+            "--camera-pixel-nm-x",
+            str(runtime_state["camera_pixel_nm_x"]),
+            "--camera-pixel-nm-y",
+            str(runtime_state["camera_pixel_nm_y"]),
+            "--width-px",
+            str(crop_width),
+            "--height-px",
+            str(crop_height),
+            "--rcc-pixel-nm",
+            str(args.rcc_pixel_nm),
+            "--rcc-sigma-px",
+            str(args.rcc_sigma_px),
+            "--upsample-factor",
+            str(args.rcc_upsample_factor),
+            "--max-pair-gap",
+            str(args.rcc_max_pair_gap),
+            "--max-shift-nm",
+            str(args.rcc_max_shift_nm),
+            "--min-pair-correlation",
+            str(args.rcc_min_pair_correlation),
+        ]
+        subprocess.run(rcc_cmd, check=True)
+        pred_for_filter = infer_dir / "predictions_degrid_rcc_corrected.h5"
+        rcc_summary = infer_dir / "rcc_summary.json"
+        reconstruction_coordinate_source = "degrid_rcc_corrected"
+    quality_summary = None
+    if bool(args.quality_metrics):
+        quality_script = args.infer_recon_root / "quality_enrich_h5.py"
+        if not quality_script.is_file():
+            raise FileNotFoundError(quality_script)
+        pred_for_filter = infer_dir / "predictions_quality_enriched.h5"
+        quality_summary = infer_dir / "quality_summary.json"
+        quality_cmd = [
+            sys.executable,
+            str(quality_script),
+            "--predictions",
+            str(pred_for_filter),
+            "--sample-tiff",
+            str(args.sample_tiff),
+            "--runtime-state",
+            str(side_dir / "derived_runtime_state.json"),
+            "--output",
+            str(pred_for_filter),
+            "--summary-json",
+            str(quality_summary),
+            "--quality-metric-mode",
+            str(args.quality_metric_mode),
+            "--roi-radius-px",
+            str(args.quality_roi_radius_px),
+        ]
+        subprocess.run(quality_cmd, check=True)
+
     filter_script = args.infer_recon_root / "filter" / "apply_filter_recon.py"
     if not filter_script.is_file():
         raise FileNotFoundError(filter_script)
-    cmd = [
-        sys.executable,
-        str(filter_script),
-        "--infer-dir",
-        str(infer_dir),
-        "--output-dir",
-        str(filter_dir),
-        "--runtime-state",
-        str(side_dir / "derived_runtime_state.json"),
-        "--predictions",
-        str(pred_path),
-        "--width-px",
-        str(crop_width),
-        "--height-px",
-        str(crop_height),
-        "--filter-profile",
-        "basic" if args.locprec_xy_nm_max is None else "strict",
-        "--prob-min",
-        str(args.filter_prob_min),
-        "--render-pixel-nm",
-        str(args.render_pixel_nm),
-        "--spot-radius-nm",
-        str(args.spot_radius_nm),
-        "--renderer",
-        "integrated_gaussian",
-        "--gamma",
-        "1.0",
-        "--scale-percentile",
-        "99.7",
-        "--radius-mode",
-        "xy_uncertainty_mean",
-        "--filtered-format",
-        "h5",
-        "--keep-filtered-predictions",
-    ]
-    if args.locprec_xy_nm_max is not None:
-        cmd.extend(["--locprec-xy-nm-max", str(args.locprec_xy_nm_max)])
-    subprocess.run(cmd, check=True)
+    filter_runs: list[dict[str, object]] = []
+    sweep_values = parse_float_list(args.filter_prob_sweep)
+    prob_values = unique_prob_values(sweep_values if sweep_values else [float(args.filter_prob_min)])
+    for prob_min in prob_values:
+        prob_tag = f"prob{int(round(float(prob_min) * 100)):03d}"
+        locprec_tag = "no_locprec" if args.locprec_xy_nm_max is None else f"locprec{int(round(float(args.locprec_xy_nm_max)))}"
+        filter_name = f"filter_recon_{prob_tag}_{locprec_tag}"
+        if bool(args.quality_metrics):
+            filter_name += "_quality"
+        filter_dir = side_dir / filter_name
+        cmd = [
+            sys.executable,
+            str(filter_script),
+            "--infer-dir",
+            str(infer_dir),
+            "--output-dir",
+            str(filter_dir),
+            "--runtime-state",
+            str(side_dir / "derived_runtime_state.json"),
+            "--predictions",
+            str(pred_for_filter),
+            "--width-px",
+            str(crop_width),
+            "--height-px",
+            str(crop_height),
+            "--filter-profile",
+            "basic" if args.locprec_xy_nm_max is None else "strict",
+            "--prob-min",
+            str(prob_min),
+            "--render-pixel-nm",
+            str(args.render_pixel_nm),
+            "--spot-radius-nm",
+            str(args.spot_radius_nm),
+            "--renderer",
+            "integrated_gaussian",
+            "--gamma",
+            "1.0",
+            "--display-mode",
+            str(args.display_mode),
+            "--display-imax-min",
+            str(args.display_imax_min),
+            "--radius-mode",
+            str(args.radius_mode),
+            "--filtered-format",
+            "h5",
+            "--keep-filtered-predictions",
+        ]
+        if args.display_imax is not None:
+            cmd.extend(["--display-imax", str(args.display_imax)])
+        if args.normalization_fov:
+            cmd.extend(["--normalization-fov", str(args.normalization_fov)])
+        if args.locprec_xy_nm_max is not None:
+            cmd.extend(["--locprec-xy-nm-max", str(args.locprec_xy_nm_max)])
+        if args.x_sig_px_max is not None:
+            cmd.extend(["--x-sig-px-max", str(args.x_sig_px_max)])
+        if args.y_sig_px_max is not None:
+            cmd.extend(["--y-sig-px-max", str(args.y_sig_px_max)])
+        if args.llrel_min is not None:
+            cmd.extend(["--llrel-min", str(args.llrel_min)])
+        if args.psf_xy_nm_max is not None:
+            cmd.extend(["--psf-xy-nm-max", str(args.psf_xy_nm_max)])
+        if bool(args.require_fit_status):
+            cmd.append("--require-fit-status")
+        subprocess.run(cmd, check=True)
+        filter_runs.append(
+            {
+                "prob_min": float(prob_min),
+                "filter_recon_dir": str(filter_dir),
+                "filter_summary": str(filter_dir / "filter_summary.json"),
+            }
+        )
     summary = {
         "side": side,
         "predictions": str(pred_path),
-        "filter_recon_dir": str(filter_dir),
+        "decode_contract": "liteloc_formal_infer_nms_v1",
+        "decode_effective": {
+            "candidate_threshold": 0.3,
+            "adjacent_threshold": 0.6,
+            "accept_threshold": 0.7,
+            "aggregation": "sum",
+            "accept_rule": ">",
+        },
+        "quality_metrics_enabled": bool(args.quality_metrics),
+        "quality_metric_mode": str(args.quality_metric_mode),
+        "quality_predictions": str(pred_for_filter) if bool(args.quality_metrics) else None,
+        "quality_summary": str(quality_summary) if quality_summary is not None else None,
+        "degrid_enabled": bool(args.degrid),
+        "degrid_predictions": str(degrid_predictions) if degrid_predictions is not None else None,
+        "degrid_summary": str(degrid_summary) if degrid_summary is not None else None,
+        "degrid": degrid_payload,
+        "rcc_drift_enabled": bool(args.rcc_drift),
+        "rcc_predictions": str(infer_dir / "predictions_degrid_rcc_corrected.h5") if bool(args.rcc_drift) else None,
+        "rcc_summary": str(rcc_summary) if rcc_summary is not None else None,
+        "rcc_frame_block_size": int(args.rcc_frame_block_size),
+        "reconstruction_coordinate_source": reconstruction_coordinate_source,
+        "reconstruction_predictions": str(pred_for_filter),
+        "filter_recon_dir": filter_runs[-1]["filter_recon_dir"] if filter_runs else None,
+        "filter_runs": filter_runs,
         "raw_rows": int(total_rows),
         "elapsed_sec": round(time.time() - started, 2),
         "tiles": len(tiles),
         "tile_geometry": {
+            "contract": "liteloc_subfov_overcut_v1",
             "roi_size": int(args.roi_size),
             "valid_roi_size": int(args.valid_roi_size),
             "cut_edge_px": int((int(args.roi_size) - int(args.valid_roi_size)) // 2),
             "tiling_mode": "edgecover",
+            "boundary_rule": "lower_inclusive_upper_exclusive",
         },
     }
     (side_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -516,6 +782,7 @@ def run_side(
 
 def main() -> int:
     args = parse_args()
+    assert_output_dir_available(args.output_dir, overwrite=bool(args.overwrite_output))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = args.checkpoint or (args.run_dir / "checkpoints/checkpoint_latest.pt")
     coeff_maps = final_coeff_maps(args.run_dir)

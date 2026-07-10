@@ -45,9 +45,9 @@ fi
   --roi-size 96 \
   --valid-roi-size 80 \
   --input-preprocess "${INPUT_PREPROCESS:-fd_deeploc_recenter}" \
-  --prob-threshold "${PROB_THRESHOLD:-0.70}" \
-  --raw-th "${RAW_TH:-0.5}" \
-  --split-th "${SPLIT_TH:-0.6}" \
-  --filter-prob-min "${FILTER_PROB_MIN:-0.90}" \
+  --filter-prob-min "${FILTER_PROB_MIN:-0.70}" \
+  --render-pixel-nm "${RENDER_PIXEL_NM:-20.0}" \
+  --spot-radius-nm "${SPOT_RADIUS_NM:-28.0}" \
+  --radius-mode "${RADIUS_MODE:-fixed}" \
   --side left \
   --infer-amp

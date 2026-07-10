@@ -8,7 +8,7 @@ import torch
 
 from neptune_v03.localization.legacy_decode import (
     LegacyEmitterSet,
-    decode_legacy_smlm_emitters,
+    decode_liteloc_eval_emitters,
     decode_legacy_targets,
     evaluate_legacy_localizations,
 )
@@ -117,9 +117,6 @@ def make_legacy_localization_eval_loss(
     photon_scale = float(scaling_cfg.get("photon_max", 1.0)) if "photon_max" in scaling_cfg else None
     z_scale = float(scaling_cfg.get("z_max", 1.0)) if "z_max" in scaling_cfg else None
     target_order = str(_mapping(loss_cfg.get("params", {}), "train.loss.params").get("target_order", "legacy_iwae")) if "params" in loss_cfg else "legacy_iwae"
-    raw_th = float(eval_cfg.get("raw_th", eval_cfg.get("candidate_probability_threshold", 0.5)))
-    split_th = float(eval_cfg.get("split_th", eval_cfg.get("split_threshold", 0.6)))
-    accept_th = float(eval_cfg.get("probability_threshold", raw_th))
     if "dist_tol_xy_nm" in eval_cfg:
         dist_tol_xy_nm = float(eval_cfg["dist_tol_xy_nm"])
         dist_tol_xy_px = None
@@ -155,11 +152,8 @@ def make_legacy_localization_eval_loss(
             y_out = model(loc_batch.model_input)
         if not isinstance(y_out, torch.Tensor) or y_out.ndim != 4 or int(y_out.shape[1]) != 10:
             return loss
-        pred = decode_legacy_smlm_emitters(
+        pred = decode_liteloc_eval_emitters(
             y_out,
-            raw_th=raw_th,
-            split_th=split_th,
-            accept_th=accept_th,
             photon_scale=photon_scale,
             z_scale=z_scale,
         )
@@ -186,9 +180,7 @@ def make_legacy_localization_eval_loss(
         eval_loss_state["target_sets"].append(_offset_emitter_set(target, batch_offset))
         eval_loss_state["batch_offset"] = batch_offset + batch_size
         eval_loss_fn.last_metrics.update(metrics.to_dict())
-        eval_loss_fn.last_metrics["legacy_eval_raw_th"] = raw_th
-        eval_loss_fn.last_metrics["legacy_eval_split_th"] = split_th
-        eval_loss_fn.last_metrics["legacy_eval_probability_threshold"] = accept_th
+        eval_loss_fn.last_metrics["decode_contract"] = "liteloc_evalmetric_nms_v1"
         if dist_tol_xy_nm is not None:
             eval_loss_fn.last_metrics["legacy_eval_dist_tol_xy_nm"] = dist_tol_xy_nm
         if dist_tol_xy_px is not None:

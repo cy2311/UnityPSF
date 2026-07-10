@@ -24,6 +24,8 @@ class FilterConfig:
     locprec_xy_nm_max: float | None = None
     photon_min: float | None = None
     photon_max: float | None = None
+    x_sig_px_max: float | None = None
+    y_sig_px_max: float | None = None
     llrel_min: float | None = None
     psf_xy_nm_max: float | None = None
     require_fit_status: bool = False
@@ -557,6 +559,26 @@ def filter_rows(
         )
         summary["after_photon"] = len(work)
 
+    if config.x_sig_px_max is not None:
+        summary["missing_x_sig_for_requested_gate"] = sum(_optional_float(row.get("x_sig")) is None for row in quality_gate_base)
+        work = _filter_stage(
+            work,
+            predicate=lambda row: (
+                (value := _optional_float(row.get("x_sig"))) is not None and abs(value) <= float(config.x_sig_px_max)
+            ),
+        )
+        summary["after_x_sig_px"] = len(work)
+
+    if config.y_sig_px_max is not None:
+        summary["missing_y_sig_for_requested_gate"] = sum(_optional_float(row.get("y_sig")) is None for row in quality_gate_base)
+        work = _filter_stage(
+            work,
+            predicate=lambda row: (
+                (value := _optional_float(row.get("y_sig"))) is not None and abs(value) <= float(config.y_sig_px_max)
+            ),
+        )
+        summary["after_y_sig_px"] = len(work)
+
     if config.require_fit_status:
         summary["missing_fit_status_for_requested_gate"] = sum(_fit_status_from_row(row) is None for row in quality_gate_base)
         work = _filter_stage(
@@ -605,6 +627,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
     parser.add_argument("--photon-min", type=float, default=None)
     parser.add_argument("--photon-max", type=float, default=None)
+    parser.add_argument("--x-sig-px-max", type=float, default=None)
+    parser.add_argument("--y-sig-px-max", type=float, default=None)
     parser.add_argument("--llrel-min", type=float, default=None)
     parser.add_argument("--psf-xy-nm-max", type=float, default=None)
     parser.add_argument("--require-fit-status", action="store_true")
@@ -644,6 +668,8 @@ def main() -> int:
             locprec_xy_nm_max=args.locprec_xy_nm_max,
             photon_min=args.photon_min,
             photon_max=args.photon_max,
+            x_sig_px_max=args.x_sig_px_max,
+            y_sig_px_max=args.y_sig_px_max,
             llrel_min=args.llrel_min,
             psf_xy_nm_max=args.psf_xy_nm_max,
             require_fit_status=bool(args.require_fit_status),
@@ -674,6 +700,8 @@ def main() -> int:
                 "locprec_xy_nm_max": args.locprec_xy_nm_max,
                 "photon_min": args.photon_min,
                 "photon_max": args.photon_max,
+                "x_sig_px_max": args.x_sig_px_max,
+                "y_sig_px_max": args.y_sig_px_max,
                 "llrel_min": args.llrel_min,
                 "psf_xy_nm_max": args.psf_xy_nm_max,
                 "require_fit_status": bool(args.require_fit_status),

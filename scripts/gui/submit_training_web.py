@@ -71,7 +71,6 @@ class SubmissionConfig:
     hq_max_emitters: int
     hq_alternating_rounds: int
     hq_spatial_balance_grid_px: str
-    prob_threshold: str
     filter_prob_min: str
     run_tag: str
 
@@ -241,8 +240,12 @@ def _format_export(config: SubmissionConfig) -> dict[str, str]:
         "HQ_RIGHT_ROI_X_MAX_PX": str(config.right_crop.left + config.right_crop.width),
         "HQ_ROI_Y_MIN_PX": str(config.left_crop.top),
         "HQ_ROI_Y_MAX_PX": str(config.left_crop.top + config.left_crop.height),
-        "PROB_THRESHOLD": config.prob_threshold,
         "FILTER_PROB_MIN": config.filter_prob_min,
+        "DISPLAY_MODE": "quantile",
+        "DISPLAY_IMAX_MIN": "-2.5228787452803374",
+        "RCC_DRIFT_ENABLED": "true",
+        "RCC_FRAME_BLOCK_SIZE": "500",
+        "RCC_PIXEL_NM": "50.0",
         "RUN_TAG": config.run_tag,
     }
     if config.hq_spatial_balance_grid_px.strip():
@@ -303,8 +306,7 @@ def _collect_config(form: dict[str, str]) -> SubmissionConfig:
         hq_max_emitters=_safe_int(form, "hq_max_emitters", 1),
         hq_alternating_rounds=_safe_int(form, "hq_alternating_rounds", 1),
         hq_spatial_balance_grid_px=form.get("hq_spatial_balance_grid_px", "").strip(),
-        prob_threshold=form.get("prob_threshold", "0.70").strip() or "0.70",
-        filter_prob_min=form.get("filter_prob_min", "0.90").strip() or "0.90",
+        filter_prob_min=form.get("filter_prob_min", "0.70").strip() or "0.70",
         run_tag=form.get("run_tag", "").strip(),
     )
     if not config.run_tag:
@@ -377,8 +379,7 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
         "hq_max_emitters": form.get("hq_max_emitters", "500"),
         "hq_alternating_rounds": form.get("hq_alternating_rounds", "20"),
         "hq_spatial_balance_grid_px": form.get("hq_spatial_balance_grid_px", ""),
-        "prob_threshold": form.get("prob_threshold", "0.70"),
-        "filter_prob_min": form.get("filter_prob_min", "0.90"),
+        "filter_prob_min": form.get("filter_prob_min", "0.70"),
         "run_tag": form.get("run_tag", ""),
     }
 
@@ -490,7 +491,7 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
       <h2>Training</h2>
       <div class="row">{field("epochs", "epochs")}{field("batch_size", "batch")}{field("steps_per_epoch", "steps")}{field("roi_size", "roi")}{field("psf_size", "psf")}{field("roi_stride", "stride")}</div>
       <div class="row">{field("start_epoch", "start update")}{field("update_interval_epochs", "interval")}{field("target_projected_emitters", "target emitters", 12)}{field("hq_max_emitters", "HQ emitters", 12)}{field("hq_alternating_rounds", "HQ rounds", 12)}{field("hq_spatial_balance_grid_px", "HQ grid px", 12)}</div>
-      <div class="row">{field("prob_threshold", "infer prob", 10)}{field("filter_prob_min", "recon prob", 10)}</div>
+      <div class="row">{field("filter_prob_min", "recon prob", 10)}</div>
       <label style="display:flex">Run tag
         <input class="path" name="run_tag" value="{html.escape(values["run_tag"])}" placeholder="empty = auto">
       </label>

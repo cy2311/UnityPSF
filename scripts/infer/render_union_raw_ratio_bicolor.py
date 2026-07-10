@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
 import h5py
@@ -16,6 +17,18 @@ import tifffile
 import torch
 from PIL import Image
 from scipy.ndimage import gaussian_filter
+
+SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from neptune_v03.infer_recon.recon.render_subpixel import (
+    NEPTUNE_DEFAULT_IMAX_MIN,
+    _colorize_density_display,
+    _normalize_display,
+    _parse_normalization_fov,
+    _smap_quantile_from_imax_min,
+)
 
 
 RAW_TIFF = Path("/home/guest/Others/main/race/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif")
@@ -47,8 +60,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height-px", type=int, default=1200)
     parser.add_argument("--camera-pixel-nm-x", type=float, default=101.11)
     parser.add_argument("--camera-pixel-nm-y", type=float, default=98.83)
-    parser.add_argument("--render-pixel-nm", type=float, default=10.0)
-    parser.add_argument("--spot-radius-nm", type=float, default=45.0)
+    parser.add_argument("--render-pixel-nm", type=float, default=20.0)
+    parser.add_argument("--spot-radius-nm", type=float, default=28.0)
+    parser.add_argument("--radius-mode", choices=("fixed", "xy_uncertainty_mean"), default="fixed")
+    parser.add_argument("--render-weight", choices=("count", "probability"), default="count")
     parser.add_argument("--chunk-size", type=int, default=200000)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=65536)
@@ -58,9 +73,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--uncertainty-min-sigma-px", type=float, default=0.75)
     parser.add_argument("--uncertainty-max-sigma-px", type=float, default=6.0)
     parser.add_argument("--uncertainty-bin-size-px", type=float, default=0.5)
-    parser.add_argument("--gamma", type=float, default=0.75)
+    parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--brightness", type=float, default=1.0)
-    parser.add_argument("--scale-percentile", type=float, default=99.7)
+    parser.add_argument("--display-mode", choices=("quantile", "fixed_imax"), default="quantile")
+    parser.add_argument("--display-imax", type=float, default=None)
+    parser.add_argument("--display-imax-min", type=float, default=NEPTUNE_DEFAULT_IMAX_MIN)
+    parser.add_argument("--normalization-fov", type=str, default=None, metavar="X0,Y0,WIDTH,HEIGHT")
     parser.add_argument("--suffix", default="union_raw_ratio_bicolor_thr040_right_priority")
     return parser.parse_args()
 
@@ -478,11 +496,11 @@ def add_bilinear(canvas: np.ndarray, x: np.ndarray, y: np.ndarray, colors: np.nd
             if not np.any(keep):
                 continue
             weight = (wx[keep] * wy[keep]).astype(np.float32, copy=False)
-            for channel in range(3):
+            for channel in range(canvas.shape[2]):
                 np.add.at(canvas[:, :, channel], (iy[keep], ix[keep]), colors[keep, channel] * weight)
 
 
-def render(rows: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray]:
+def render(rows: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     width = max(1, int(np.ceil(args.width_px * args.camera_pixel_nm_x / args.render_pixel_nm)))
     height = max(1, int(np.ceil(args.height_px * args.camera_pixel_nm_y / args.render_pixel_nm)))
     x = rows["x_px"].astype(np.float32) * float(args.camera_pixel_nm_x) / float(args.render_pixel_nm)
@@ -493,20 +511,25 @@ def render(rows: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[np.nd
     high = ratio >= float(args.ratio_threshold)
     colors[high] = np.asarray([1.0, 0.12, 0.08], dtype=np.float32)
     colors[~high] = np.asarray([0.05, 0.55, 1.0], dtype=np.float32)
-    colors *= prob[:, None]
-    ratio_colors = plt.get_cmap("turbo")(np.clip(ratio, 0.0, 1.0))[:, :3].astype(np.float32) * prob[:, None]
+    weights = np.ones_like(prob) if str(args.render_weight) == "count" else prob
+    colors *= weights[:, None]
+    ratio_colors = plt.get_cmap("turbo")(np.clip(ratio, 0.0, 1.0))[:, :3].astype(np.float32) * weights[:, None]
 
-    sx = np.abs(rows["x_sig"].astype(np.float32)) * float(args.camera_pixel_nm_x) / float(args.render_pixel_nm)
-    sy = np.abs(rows["y_sig"].astype(np.float32)) * float(args.camera_pixel_nm_y) / float(args.render_pixel_nm)
-    sigma = np.sqrt((sx * sx + sy * sy) / 2.0).astype(np.float32)
-    sigma *= float(args.uncertainty_scale)
-    sigma = np.nan_to_num(sigma, nan=float(args.uncertainty_min_sigma_px), posinf=float(args.uncertainty_max_sigma_px))
-    sigma = np.clip(sigma, float(args.uncertainty_min_sigma_px), float(args.uncertainty_max_sigma_px))
+    if str(args.radius_mode) == "fixed":
+        fixed_sigma = max((float(args.spot_radius_nm) / float(args.render_pixel_nm)) / 2.0, 0.7)
+        sigma = np.full(x.size, fixed_sigma, dtype=np.float32)
+    else:
+        sx = np.abs(rows["x_sig"].astype(np.float32)) * float(args.camera_pixel_nm_x) / float(args.render_pixel_nm)
+        sy = np.abs(rows["y_sig"].astype(np.float32)) * float(args.camera_pixel_nm_y) / float(args.render_pixel_nm)
+        sigma = np.sqrt((sx * sx + sy * sy) / 2.0).astype(np.float32)
+        sigma *= float(args.uncertainty_scale)
+        sigma = np.nan_to_num(sigma, nan=float(args.uncertainty_min_sigma_px), posinf=float(args.uncertainty_max_sigma_px))
+        sigma = np.clip(sigma, float(args.uncertainty_min_sigma_px), float(args.uncertainty_max_sigma_px))
     bins = np.round(sigma / float(args.uncertainty_bin_size_px)) * float(args.uncertainty_bin_size_px)
     bins = np.clip(bins, float(sigma.min()) if sigma.size else 0.75, float(sigma.max()) if sigma.size else 0.75)
 
     def draw(color_values: np.ndarray) -> np.ndarray:
-        out = np.zeros((height, width, 3), dtype=np.float32)
+        out = np.zeros((height, width, color_values.shape[1]), dtype=np.float32)
         for sig in np.unique(bins):
             idx = np.flatnonzero(np.isclose(bins, sig))
             if idx.size == 0:
@@ -515,22 +538,52 @@ def render(rows: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[np.nd
             for start in range(0, idx.size, int(args.chunk_size)):
                 sel = idx[start : start + int(args.chunk_size)]
                 add_bilinear(tmp, x[sel], y[sel], color_values[sel])
-            for channel in range(3):
+            for channel in range(out.shape[2]):
                 out[:, :, channel] += gaussian_filter(tmp[:, :, channel], sigma=float(sig), mode="constant")
         return out
 
-    return draw(colors), draw(ratio_colors)
+    return draw(colors), draw(ratio_colors), draw(weights[:, None])[:, :, 0]
 
 
-def save_rgb(canvas: np.ndarray, path: Path, *, gamma: float, brightness: float, scale_percentile: float) -> None:
-    positive = canvas[canvas > 0]
-    scale = float(np.percentile(positive, float(scale_percentile))) if positive.size else 1.0
-    image = np.clip(float(brightness) * canvas / max(scale, 1e-6), 0.0, 1.0)
-    if float(gamma) > 0:
-        image = np.power(image, float(gamma))
+def save_rgb(canvas: np.ndarray, density: np.ndarray, path: Path, *, args: argparse.Namespace) -> dict[str, object]:
+    normalization_fov = _parse_normalization_fov(
+        str(args.normalization_fov) if args.normalization_fov else None,
+        width=int(canvas.shape[1]),
+        height=int(canvas.shape[0]),
+    )
+    _, imax, source = _normalize_display(
+        density,
+        mode=str(args.display_mode),
+        fixed_imax=args.display_imax,
+        imax_min=float(args.display_imax_min),
+        gamma=float(args.gamma),
+        brightness=float(args.brightness),
+        normalize_roi=normalization_fov,
+    )
+    image = _colorize_density_display(
+        density,
+        canvas,
+        imax=imax,
+        gamma=float(args.gamma),
+        brightness=float(args.brightness),
+    )
     rgb = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     Image.fromarray(rgb, mode="RGB").save(path)
     tifffile.imwrite(path.with_suffix(".tiff"), rgb, photometric="rgb")
+    linear_density_path = path.with_name(f"{path.stem}_density_linear_float32.tiff")
+    linear_rgb_path = path.with_name(f"{path.stem}_rgb_linear_float32.tiff")
+    tifffile.imwrite(linear_density_path, density.astype(np.float32, copy=False))
+    tifffile.imwrite(linear_rgb_path, canvas.astype(np.float32, copy=False), photometric="rgb")
+    return {
+        "display_mode": str(args.display_mode),
+        "display_imax": float(imax),
+        "display_imax_source": source,
+        "display_imax_min": float(args.display_imax_min),
+        "display_quantile": _smap_quantile_from_imax_min(float(args.display_imax_min)) if str(args.display_mode) == "quantile" else None,
+        "normalization_fov_rendered_px": list(normalization_fov) if normalization_fov is not None else None,
+        "linear_density_path": str(linear_density_path),
+        "linear_rgb_path": str(linear_rgb_path),
+    }
 
 
 def main() -> int:
@@ -717,11 +770,11 @@ def main() -> int:
     reader.close()
     out_h5 = args.output_dir / f"{args.suffix}_union_points.h5"
     rows = write_union_h5(out_h5, buffers)
-    dual_canvas, ratio_canvas = render(rows, args)
+    dual_canvas, ratio_canvas, density = render(rows, args)
     dual_png = args.output_dir / f"{args.suffix}.png"
     ratio_png = args.output_dir / f"{args.suffix}_ratio_map.png"
-    save_rgb(dual_canvas, dual_png, gamma=float(args.gamma), brightness=float(args.brightness), scale_percentile=float(args.scale_percentile))
-    save_rgb(ratio_canvas, ratio_png, gamma=float(args.gamma), brightness=float(args.brightness), scale_percentile=float(args.scale_percentile))
+    dual_display = save_rgb(dual_canvas, density, dual_png, args=args)
+    ratio_display = save_rgb(ratio_canvas, density, ratio_png, args=args)
     ratio = rows["ratio_right"].astype(np.float32)
     source = rows["source"].astype(np.int32)
     color = rows["color_class"].astype(np.int32)
@@ -736,10 +789,16 @@ def main() -> int:
         "ratio_png": str(ratio_png),
         "ratio_tiff": str(ratio_png.with_suffix(".tiff")),
         "ratio_threshold": float(args.ratio_threshold),
+        "render_pixel_nm": float(args.render_pixel_nm),
+        "spot_radius_nm": float(args.spot_radius_nm),
+        "radius_mode": str(args.radius_mode),
+        "render_weight": str(args.render_weight),
         "union_dist_px": float(args.union_dist_px),
         "union_policy": str(args.union_policy),
         "min_total_intensity": float(args.min_total_intensity),
         "right_priority_for_duplicates": True,
+        "dual_display": dual_display,
+        "ratio_display": ratio_display,
         "alignment": alignment,
         "alignment_qc_before": alignment_before,
         "alignment_qc_after": alignment_after,

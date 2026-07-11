@@ -152,6 +152,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--degrid-rescale-bins", type=int, default=20)
     parser.add_argument("--degrid-threshold", type=float, default=0.01)
     parser.add_argument("--degrid-min-bin-count", type=int, default=32)
+    parser.add_argument("--degrid-spatial-bins-x", type=int, default=6)
+    parser.add_argument("--degrid-spatial-bins-y", type=int, default=12)
     parser.add_argument("--rcc-drift", type=parse_bool, default=True)
     parser.add_argument("--rcc-frame-block-size", type=int, default=500)
     parser.add_argument("--rcc-pixel-nm", type=float, default=50.0)
@@ -587,6 +589,10 @@ def run_side(
             rescale_bins=int(args.degrid_rescale_bins),
             threshold=float(args.degrid_threshold),
             min_bin_count=int(args.degrid_min_bin_count),
+            spatial_bins_x=int(args.degrid_spatial_bins_x),
+            spatial_bins_y=int(args.degrid_spatial_bins_y),
+            field_width_px=float(crop_width),
+            field_height_px=float(crop_height),
         )
 
     pred_for_filter = default_reconstruction_predictions(
@@ -594,7 +600,10 @@ def run_side(
         degrid=infer_dir / "predictions_degrid.h5",
         degrid_enabled=bool(args.degrid),
     )
-    reconstruction_coordinate_source = "degrid" if bool(args.degrid) else "raw"
+    spatial_degrid = bool(args.degrid) and (
+        int(args.degrid_spatial_bins_x) > 1 or int(args.degrid_spatial_bins_y) > 1
+    )
+    reconstruction_coordinate_source = "spatial_degrid" if spatial_degrid else ("degrid" if bool(args.degrid) else "raw")
     rcc_summary = None
     if bool(args.rcc_drift):
         if not bool(args.degrid):
@@ -635,7 +644,7 @@ def run_side(
         subprocess.run(rcc_cmd, check=True)
         pred_for_filter = infer_dir / "predictions_degrid_rcc_corrected.h5"
         rcc_summary = infer_dir / "rcc_summary.json"
-        reconstruction_coordinate_source = "degrid_rcc_corrected"
+        reconstruction_coordinate_source = "spatial_degrid_rcc_corrected" if spatial_degrid else "degrid_rcc_corrected"
     quality_summary = None
     if bool(args.quality_metrics):
         quality_script = args.infer_recon_root / "quality_enrich_h5.py"
@@ -753,6 +762,8 @@ def run_side(
         "quality_predictions": str(pred_for_filter) if bool(args.quality_metrics) else None,
         "quality_summary": str(quality_summary) if quality_summary is not None else None,
         "degrid_enabled": bool(args.degrid),
+        "degrid_spatial_bins_x": int(args.degrid_spatial_bins_x),
+        "degrid_spatial_bins_y": int(args.degrid_spatial_bins_y),
         "degrid_predictions": str(degrid_predictions) if degrid_predictions is not None else None,
         "degrid_summary": str(degrid_summary) if degrid_summary is not None else None,
         "degrid": degrid_payload,

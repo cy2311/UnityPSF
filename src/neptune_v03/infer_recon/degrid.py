@@ -112,6 +112,98 @@ def lunar_rescale_offsets(
     )
 
 
+def spatial_lunar_rescale_offsets(
+    *,
+    x_px: np.ndarray,
+    y_px: np.ndarray,
+    x_offset_px: np.ndarray,
+    y_offset_px: np.ndarray,
+    x_sig_nm: np.ndarray,
+    y_sig_nm: np.ndarray,
+    pixel_size_nm_x: float,
+    pixel_size_nm_y: float,
+    field_width_px: float,
+    field_height_px: float,
+    spatial_bins_x: int,
+    spatial_bins_y: int,
+    rescale_bins: int = 20,
+    threshold: float = 0.01,
+    min_bin_count: int = 32,
+) -> LunarOffsetRescaleResult:
+    x_px = np.asarray(x_px, dtype=np.float64)
+    y_px = np.asarray(y_px, dtype=np.float64)
+    x_offset_px = np.asarray(x_offset_px, dtype=np.float64)
+    y_offset_px = np.asarray(y_offset_px, dtype=np.float64)
+    x_sig_nm = np.asarray(x_sig_nm, dtype=np.float64)
+    y_sig_nm = np.asarray(y_sig_nm, dtype=np.float64)
+    if not (x_px.shape == y_px.shape == x_offset_px.shape == y_offset_px.shape == x_sig_nm.shape == y_sig_nm.shape):
+        raise ValueError("coordinates, offsets, and uncertainty arrays must have identical shapes")
+    if int(spatial_bins_x) <= 0 or int(spatial_bins_y) <= 0:
+        raise ValueError("spatial bin counts must be positive")
+    if float(field_width_px) <= 0 or float(field_height_px) <= 0:
+        raise ValueError("field dimensions must be positive")
+
+    x_bin = np.clip(
+        np.floor(x_px / float(field_width_px) * int(spatial_bins_x)).astype(np.int64),
+        0,
+        int(spatial_bins_x) - 1,
+    )
+    y_bin = np.clip(
+        np.floor(y_px / float(field_height_px) * int(spatial_bins_y)).astype(np.int64),
+        0,
+        int(spatial_bins_y) - 1,
+    )
+    x_rescaled = x_offset_px.copy()
+    y_rescaled = y_offset_px.copy()
+    records: list[dict[str, object]] = []
+    processed_bins = 0
+    for spatial_y in range(int(spatial_bins_y)):
+        for spatial_x in range(int(spatial_bins_x)):
+            indices = np.where((x_bin == spatial_x) & (y_bin == spatial_y))[0]
+            if indices.size < int(min_bin_count):
+                records.append(
+                    {
+                        "spatial_x": int(spatial_x),
+                        "spatial_y": int(spatial_y),
+                        "count": int(indices.size),
+                        "status": "skipped_insufficient_records",
+                    }
+                )
+                continue
+            local = lunar_rescale_offsets(
+                x_offset_px=x_offset_px[indices],
+                y_offset_px=y_offset_px[indices],
+                x_sig_nm=x_sig_nm[indices],
+                y_sig_nm=y_sig_nm[indices],
+                pixel_size_nm_x=float(pixel_size_nm_x),
+                pixel_size_nm_y=float(pixel_size_nm_y),
+                rescale_bins=int(rescale_bins),
+                threshold=float(threshold),
+                min_bin_count=int(min_bin_count),
+            )
+            x_rescaled[indices] = local.x_offset_px
+            y_rescaled[indices] = local.y_offset_px
+            processed_bins += int(local.processed_bins)
+            records.append(
+                {
+                    "spatial_x": int(spatial_x),
+                    "spatial_y": int(spatial_y),
+                    "count": int(indices.size),
+                    "status": "processed" if local.processed_bins else "skipped",
+                    "processed_uncertainty_bins": int(local.processed_bins),
+                }
+            )
+
+    changed = (np.abs(x_rescaled - x_offset_px) > 1e-12) | (np.abs(y_rescaled - y_offset_px) > 1e-12)
+    return LunarOffsetRescaleResult(
+        x_offset_px=x_rescaled,
+        y_offset_px=y_rescaled,
+        changed=changed,
+        processed_bins=int(processed_bins),
+        bin_records=tuple(records),
+    )
+
+
 def degrid_predictions_h5(
     *,
     predictions: Path,
@@ -123,6 +215,10 @@ def degrid_predictions_h5(
     threshold: float = 0.01,
     min_bin_count: int = 32,
     histogram_png: Path | None,
+    spatial_bins_x: int = 1,
+    spatial_bins_y: int = 1,
+    field_width_px: float | None = None,
+    field_height_px: float | None = None,
 ) -> dict[str, object]:
     predictions = Path(predictions)
     output = Path(output)
@@ -146,17 +242,39 @@ def degrid_predictions_h5(
         x_sig_nm = _read_uncertainty_nm(group, axis="x", pixel_size_nm=float(pixel_size_nm_x))
         y_sig_nm = _read_uncertainty_nm(group, axis="y", pixel_size_nm=float(pixel_size_nm_y))
 
-        result = lunar_rescale_offsets(
-            x_offset_px=x_offset_px,
-            y_offset_px=y_offset_px,
-            x_sig_nm=x_sig_nm,
-            y_sig_nm=y_sig_nm,
-            pixel_size_nm_x=float(pixel_size_nm_x),
-            pixel_size_nm_y=float(pixel_size_nm_y),
-            rescale_bins=int(rescale_bins),
-            threshold=float(threshold),
-            min_bin_count=int(min_bin_count),
-        )
+        spatial_enabled = int(spatial_bins_x) > 1 or int(spatial_bins_y) > 1
+        if spatial_enabled:
+            if field_width_px is None or field_height_px is None:
+                raise ValueError("spatial degrid requires field dimensions")
+            result = spatial_lunar_rescale_offsets(
+                x_px=x_px,
+                y_px=y_px,
+                x_offset_px=x_offset_px,
+                y_offset_px=y_offset_px,
+                x_sig_nm=x_sig_nm,
+                y_sig_nm=y_sig_nm,
+                pixel_size_nm_x=float(pixel_size_nm_x),
+                pixel_size_nm_y=float(pixel_size_nm_y),
+                field_width_px=float(field_width_px),
+                field_height_px=float(field_height_px),
+                spatial_bins_x=int(spatial_bins_x),
+                spatial_bins_y=int(spatial_bins_y),
+                rescale_bins=int(rescale_bins),
+                threshold=float(threshold),
+                min_bin_count=int(min_bin_count),
+            )
+        else:
+            result = lunar_rescale_offsets(
+                x_offset_px=x_offset_px,
+                y_offset_px=y_offset_px,
+                x_sig_nm=x_sig_nm,
+                y_sig_nm=y_sig_nm,
+                pixel_size_nm_x=float(pixel_size_nm_x),
+                pixel_size_nm_y=float(pixel_size_nm_y),
+                rescale_bins=int(rescale_bins),
+                threshold=float(threshold),
+                min_bin_count=int(min_bin_count),
+            )
         delta_x_px = result.x_offset_px - x_offset_px
         delta_y_px = result.y_offset_px - y_offset_px
         _replace(group, "x_px", x_px + delta_x_px)
@@ -172,12 +290,16 @@ def degrid_predictions_h5(
         _replace_if_present(group, "x_offset_nm", result.x_offset_px * float(pixel_size_nm_x))
         _replace_if_present(group, "y_offset_nm", result.y_offset_px * float(pixel_size_nm_y))
 
-        handle.attrs["derived_kind"] = "lunar_offset_degrid"
+        handle.attrs["derived_kind"] = "lunar_spatial_offset_degrid" if spatial_enabled else "lunar_offset_degrid"
         handle.attrs["source_predictions"] = str(predictions)
-        handle.attrs["degrid_contract"] = "lunar_rescale_offset_v1"
+        handle.attrs["degrid_contract"] = (
+            "lunar_spatial_rescale_offset_v1" if spatial_enabled else "lunar_rescale_offset_v1"
+        )
         handle.attrs["degrid_rescale_bins"] = int(rescale_bins)
         handle.attrs["degrid_threshold"] = float(threshold)
         handle.attrs["degrid_min_bin_count"] = int(min_bin_count)
+        handle.attrs["degrid_spatial_bins_x"] = int(spatial_bins_x)
+        handle.attrs["degrid_spatial_bins_y"] = int(spatial_bins_y)
         handle.attrs["count"] = int(x_px.size)
 
     shift_x_nm = delta_x_px * float(pixel_size_nm_x)
@@ -189,7 +311,7 @@ def degrid_predictions_h5(
     y_hist_before = np.histogram(y_offset_px, bins=histogram_edges)[0]
     y_hist_after = np.histogram(result.y_offset_px, bins=histogram_edges)[0]
     payload = {
-        "contract": "lunar_rescale_offset_v1",
+        "contract": "lunar_spatial_rescale_offset_v1" if spatial_enabled else "lunar_rescale_offset_v1",
         "source_predictions": str(predictions),
         "output_predictions": str(output),
         "total_rows": int(x_px.size),
@@ -198,6 +320,8 @@ def degrid_predictions_h5(
         "rescale_bins": int(rescale_bins),
         "threshold": float(threshold),
         "min_bin_count": int(min_bin_count),
+        "spatial_bins_x": int(spatial_bins_x),
+        "spatial_bins_y": int(spatial_bins_y),
         "pixel_size_nm_x": float(pixel_size_nm_x),
         "pixel_size_nm_y": float(pixel_size_nm_y),
         "shift_nm": _shift_summary(radial_shift_nm),
@@ -318,6 +442,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--rescale-bins", type=int, default=20)
     parser.add_argument("--threshold", type=float, default=0.01)
     parser.add_argument("--min-bin-count", type=int, default=32)
+    parser.add_argument("--spatial-bins-x", type=int, default=1)
+    parser.add_argument("--spatial-bins-y", type=int, default=1)
+    parser.add_argument("--field-width-px", type=float, default=None)
+    parser.add_argument("--field-height-px", type=float, default=None)
     return parser.parse_args()
 
 
@@ -333,6 +461,10 @@ def main() -> int:
         rescale_bins=int(args.rescale_bins),
         threshold=float(args.threshold),
         min_bin_count=int(args.min_bin_count),
+        spatial_bins_x=int(args.spatial_bins_x),
+        spatial_bins_y=int(args.spatial_bins_y),
+        field_width_px=args.field_width_px,
+        field_height_px=args.field_height_px,
     )
     print(json.dumps(payload, indent=2))
     return 0

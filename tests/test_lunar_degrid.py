@@ -6,6 +6,7 @@ from neptune_v03.infer_recon.degrid import (
     degrid_predictions_h5,
     lunar_histogram_equalization,
     lunar_rescale_offsets,
+    spatial_lunar_rescale_offsets,
 )
 from neptune_v03.infer_recon.predictions_io import H5PredictionWriter
 
@@ -152,3 +153,39 @@ def test_degrid_h5_is_derived_and_preserves_non_xy_fields(tmp_path) -> None:
     assert payload["offset_uniformity_cv"]["x_after"] < payload["offset_uniformity_cv"]["x_before"]
     assert payload["offset_uniformity_cv"]["y_after"] < payload["offset_uniformity_cv"]["y_before"]
     assert summary.is_file()
+
+
+def test_spatial_rescale_removes_local_grid_bias_hidden_by_global_cancellation() -> None:
+    rng = np.random.default_rng(7)
+    count = 40000
+    x_px = rng.uniform(0.0, 200.0, count)
+    y_px = rng.uniform(0.0, 100.0, count)
+    left = x_px < 100.0
+    base = rng.beta(5.0, 2.0, count) - 0.5
+    x_offset = np.where(left, base, -base)
+    y_offset = rng.uniform(-0.5, 0.5, count)
+    sigma = rng.uniform(10.0, 20.0, count)
+
+    result = spatial_lunar_rescale_offsets(
+        x_px=x_px,
+        y_px=y_px,
+        x_offset_px=x_offset,
+        y_offset_px=y_offset,
+        x_sig_nm=sigma,
+        y_sig_nm=sigma,
+        pixel_size_nm_x=100.0,
+        pixel_size_nm_y=100.0,
+        field_width_px=200.0,
+        field_height_px=100.0,
+        spatial_bins_x=2,
+        spatial_bins_y=1,
+        rescale_bins=1,
+        threshold=0.01,
+        min_bin_count=32,
+    )
+
+    for mask in (left, ~left):
+        before = abs(np.mean(np.exp(2j * np.pi * x_offset[mask])))
+        after = abs(np.mean(np.exp(2j * np.pi * result.x_offset_px[mask])))
+        assert before > 0.2
+        assert after < 0.02

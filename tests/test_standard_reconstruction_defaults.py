@@ -81,6 +81,8 @@ def test_formal_infer_and_standard_wrappers_use_same_defaults(monkeypatch, tmp_p
     assert args.spot_radius_nm == 28.0
     assert args.radius_mode == "fixed"
     assert args.degrid is True
+    assert args.degrid_spatial_bins_x == 6
+    assert args.degrid_spatial_bins_y == 12
     assert args.rcc_drift is True
     assert args.rcc_frame_block_size == 500
 
@@ -88,6 +90,14 @@ def test_formal_infer_and_standard_wrappers_use_same_defaults(monkeypatch, tmp_p
     assert "${FILTER_PROB_MIN:-0.70}" in sbatch
     assert "${RENDER_PIXEL_NM:-20.0}" in sbatch
     assert "${SPOT_RADIUS_NM:-28.0}" in sbatch
+    assert "${DEGRID_SPATIAL_BINS_X:-6}" in sbatch
+    assert "${DEGRID_SPATIAL_BINS_Y:-12}" in sbatch
+
+    reprocess = (PROJECT_ROOT / "scripts/infer/reprocess_existing_predictions_current_standard.sbatch").read_text(
+        encoding="utf-8"
+    )
+    assert "${DEGRID_SPATIAL_BINS_X:-6}" in reprocess
+    assert "${DEGRID_SPATIAL_BINS_Y:-12}" in reprocess
 
     pipeline = (PROJECT_ROOT / "run_standard_pipeline.sh").read_text(encoding="utf-8")
     assert 'FILTER_PROB_MIN="${FILTER_PROB_MIN:-0.70}"' in pipeline

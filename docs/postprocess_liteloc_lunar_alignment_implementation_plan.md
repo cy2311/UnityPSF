@@ -15,7 +15,7 @@
 | 时间窗口合并 | 部分对齐 | 3-frame rolling inference，缺 frame 唯一覆盖测试 |
 | Probability sweep | 已实现 | Phase 0 已统一 count weight、nm z range 和 renderer contract |
 | Localization schema | 已完成 Phase 0 | H5 v0.2 已写入显式单位、`z_sig/photon_sig` 和 xy offset 字段 |
-| LUNAR degrid | 已固化为默认重构坐标 | 20 bins、threshold 0.01，标准 filter/recon 默认读取 degrid H5 |
+| Spatial LUNAR degrid | 已固化为默认重构坐标 | 左右通道分别使用 `6 x 12` 空间分块，每块执行 20 个 uncertainty bins、threshold 0.01；标准 filter/recon 默认读取 spatial degrid H5 |
 | Raw/derived 双轨 | 已完成 | raw H5 不可变，degrid 另存派生 H5 并记录 source/contract |
 | Reconstruction | 已完成 Phase 0 修正 | 默认 count weight，z 色轴和范围统一使用 nm |
 | Degrid 定量验收 | 已完成 Phase 4 | NCP `prob>=0.9` 上 LiteLoc-style grid index 下降，验收通过 |
@@ -38,6 +38,12 @@ predictions_degrid.h5
 ```
 
 原始定位用于定量评估、物理模型诊断和可追溯分析。Degrid 只修正展示坐标，不得覆盖 raw localization，也不得用于宣称原始 localization accuracy 提升。
+
+### Spatial degrid 默认修正
+
+3371 全场统一 degrid 的全局 offset 统计接近均匀，但不同视场区域的相反 x 偏差会互相抵消，重构中仍残留一个相机像素周期的竖向光栅。实测光栅周期为 `5.057` 个 20 nm 重构像素，与 `101.11 / 20 = 5.056` 完全一致。
+
+正式路径因此改为左右通道分别执行 `6 x 12` spatial degrid，再执行 RCC。现有 3371 H5 parity 验证中，`5.056 px` 频率功率相对频带中位数从 `513.9` 降至 `9.0`，下降约 `98.2%`；left/right localization 数量不变。原始 `predictions_merged.h5` 继续保持不可变，修正坐标写入派生 H5。
 
 ## Phase 0：输出修正与渲染契约
 

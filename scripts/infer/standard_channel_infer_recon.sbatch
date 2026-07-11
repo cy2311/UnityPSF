@@ -119,6 +119,8 @@ fi
   --degrid-rescale-bins "${DEGRID_RESCALE_BINS:-20}" \
   --degrid-threshold "${DEGRID_THRESHOLD:-0.01}" \
   --degrid-min-bin-count "${DEGRID_MIN_BIN_COUNT:-32}" \
+  --degrid-spatial-bins-x "${DEGRID_SPATIAL_BINS_X:-6}" \
+  --degrid-spatial-bins-y "${DEGRID_SPATIAL_BINS_Y:-12}" \
   --rcc-drift="${RCC_DRIFT_ENABLED:-true}" \
   --rcc-frame-block-size "${RCC_FRAME_BLOCK_SIZE:-500}" \
   --rcc-pixel-nm "${RCC_PIXEL_NM:-50.0}" \

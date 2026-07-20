@@ -1426,6 +1426,8 @@ def _sample_roi_bank_posterior_update_from_current_model(
             providers_by_domain=dict(roi_conditioning["providers"]),
             append_domain_onehot=bool(roi_conditioning["append_domain_onehot"]),
             domain_names=tuple(str(name) for name in roi_conditioning["domain_names"]),
+            condition_feature_dim=roi_conditioning["condition_feature_dim"],
+            condition_dim=roi_conditioning["condition_dim"],
         )
     normalization_cfg = train_cfg.get("normalization")
     frame_proc = _build_inference_frame_proc({"normalization": dict(normalization_cfg)}) if isinstance(normalization_cfg, Mapping) else None
@@ -3227,6 +3229,8 @@ def _roi_conditioning_context(train_cfg: Mapping[str, Any]) -> dict[str, Any]:
         "providers": providers or None,
         "append_domain_onehot": bool(online_cfg.get("append_domain_onehot", False)),
         "domain_names": tuple(providers.keys()),
+        "condition_feature_dim": online_cfg.get("condition_feature_dim"),
+        "condition_dim": online_cfg.get("condition_dim"),
     }
 
 

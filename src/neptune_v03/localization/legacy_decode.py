@@ -83,12 +83,13 @@ def decode_liteloc_eval_emitters(
 def decode_liteloc_formal_infer_emitters(
     y_out: torch.Tensor,
     *,
+    accept_threshold: float = LITELOC_FORMAL_INFER_THRESHOLD,
     photon_scale: float | None = None,
     z_scale: float | None = None,
 ) -> LegacyEmitterSet:
     return _decode_liteloc_emitters(
         y_out,
-        accept_threshold=LITELOC_FORMAL_INFER_THRESHOLD,
+        accept_threshold=float(accept_threshold),
         photon_scale=photon_scale,
         z_scale=z_scale,
     )

@@ -54,6 +54,29 @@ def build_roi_bank_from_loc_harvest(
     )
 
 
+def _prepare_condition_vector(
+    condition: torch.Tensor,
+    *,
+    feature_dim: int,
+    append_domain_onehot: bool,
+    domain_name: str,
+    domain_names: tuple[str, ...],
+    expected_dim: int | None,
+) -> torch.Tensor:
+    if int(condition.shape[0]) >= int(feature_dim):
+        matched = condition[: int(feature_dim)].contiguous()
+    else:
+        matched = torch.zeros((int(feature_dim),), dtype=condition.dtype, device=condition.device)
+        matched[: int(condition.shape[0])] = condition
+    if append_domain_onehot:
+        onehot = torch.zeros((len(domain_names),), dtype=condition.dtype, device=condition.device)
+        onehot[list(domain_names).index(str(domain_name))] = 1.0
+        matched = torch.cat((matched, onehot), dim=0)
+    if expected_dim is not None and int(matched.shape[0]) != int(expected_dim):
+        raise ValueError(f"Expected condition_dim={int(expected_dim)}, got {int(matched.shape[0])}")
+    return matched
+
+
 def loc_harvest_infer_fn(
     *,
     model: torch.nn.Module,
@@ -81,6 +104,8 @@ def loc_harvest_infer_fn(
         provider = None if providers is None else providers.get(str(domain.name))
         append_domain_onehot = bool(context.get("append_domain_onehot", False))
         domain_names = tuple(str(name) for name in context.get("domain_names", ()))
+        condition_feature_dim = context.get("condition_feature_dim")
+        condition_dim = context.get("condition_dim")
         emitters: list[InferredEmitter] = []
         background_accum = np.zeros((height, width), dtype=np.float32)
         background_count = np.zeros((height, width), dtype=np.float32)
@@ -107,10 +132,14 @@ def loc_harvest_infer_fn(
                         device=device,
                         dtype=tile_image.dtype,
                     )
-                    if append_domain_onehot:
-                        onehot = torch.zeros((len(domain_names),), dtype=tile_image.dtype, device=device)
-                        onehot[list(domain_names).index(str(domain.name))] = 1.0
-                        condition = torch.cat((condition, onehot), dim=0)
+                    condition = _prepare_condition_vector(
+                        condition,
+                        feature_dim=int(condition.shape[0]) if condition_feature_dim is None else int(condition_feature_dim),
+                        append_domain_onehot=append_domain_onehot,
+                        domain_name=str(domain.name),
+                        domain_names=domain_names,
+                        expected_dim=None if condition_dim is None else int(condition_dim),
+                    )
                     model_input = (tile_image, condition.unsqueeze(0))
                 output = model(model_input).detach().to(dtype=torch.float32)
                 tile_emitters = extract_old_smlm_emitters_from_tile(

@@ -63,6 +63,18 @@ def test_eval_and_formal_infer_use_liteloc_context_thresholds() -> None:
     assert int(inferred.probability.numel()) == 0
 
 
+def test_formal_infer_threshold_can_match_training_eval_contract() -> None:
+    y_out = torch.zeros((1, SMLMOutputChannels.count, 3, 3), dtype=torch.float32)
+    y_out[0, SMLMOutputChannels.p, 1, 1] = 0.5
+
+    emitters = decode_liteloc_formal_infer_emitters(
+        y_out,
+        accept_threshold=0.3,
+    )
+
+    torch.testing.assert_close(emitters.probability, torch.tensor([0.5]))
+
+
 def test_liteloc_decode_uses_direct_candidate_pixel_values_and_physical_units() -> None:
     y_out = torch.zeros((1, SMLMOutputChannels.count, 3, 3), dtype=torch.float32)
     y_out[0, SMLMOutputChannels.p, 1, 1] = 0.8

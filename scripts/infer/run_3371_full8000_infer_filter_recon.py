@@ -129,6 +129,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, default=RUN_3371)
     parser.add_argument("--config", type=Path, default=CONFIG)
     parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--right-coeff-map", type=Path, default=None)
+    parser.add_argument("--domain-count", type=int, default=2)
+    parser.add_argument("--right-domain-index", type=int, default=1)
     parser.add_argument("--sample-tiff", type=Path, default=RAW_TIFF)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
@@ -137,6 +140,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-frames", type=int, default=8000)
     parser.add_argument("--roi-size", type=int, default=96)
     parser.add_argument("--valid-roi-size", type=int, default=80)
+    parser.add_argument("--decode-accept-threshold", type=float, default=0.70)
     parser.add_argument("--filter-prob-min", type=float, default=0.70)
     parser.add_argument("--filter-prob-sweep", type=str, default=None, help="Comma-separated prob_min values, e.g. 0.7,0.8,0.9.")
     parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
@@ -253,12 +257,30 @@ def domain_condition(
     height: int,
     width: int,
     domain_index: int,
+    feature_dim: int,
     domain_count: int = 2,
 ) -> torch.Tensor:
     base = provider.condition_vector_from_xy(x0=x0, y0=y0, height=height, width=width)
+    if int(base.shape[0]) < int(feature_dim):
+        padded = torch.zeros((int(feature_dim),), dtype=base.dtype, device=base.device)
+        padded[: int(base.shape[0])] = base
+        base = padded
+    elif int(base.shape[0]) > int(feature_dim):
+        base = base[: int(feature_dim)].contiguous()
     onehot = torch.zeros(int(domain_count), dtype=base.dtype)
     onehot[int(domain_index)] = 1.0
     return torch.cat([base, onehot], dim=0).contiguous()
+
+
+def condition_feature_dim(*, condition_dim: int, domain_count: int, domain_index: int) -> int:
+    if int(domain_count) <= 0:
+        raise ValueError("domain_count must be positive")
+    if not 0 <= int(domain_index) < int(domain_count):
+        raise ValueError(f"domain_index={int(domain_index)} must be in [0, {int(domain_count)})")
+    feature_dim = int(condition_dim) - int(domain_count)
+    if feature_dim <= 0:
+        raise ValueError("condition_dim must be greater than domain_count")
+    return feature_dim
 
 
 def rows_from_emitters(
@@ -354,6 +376,7 @@ def flush_bucket(
     model: torch.nn.Module,
     device: torch.device,
     infer_amp: bool,
+    decode_accept_threshold: float,
     photon_scale: float,
     z_scale: float,
     crop_left: int,
@@ -370,6 +393,7 @@ def flush_bucket(
         output = model([batch, cond])
     emitters = decode_liteloc_formal_infer_emitters(
         output.float(),
+        accept_threshold=float(decode_accept_threshold),
         photon_scale=float(photon_scale),
         z_scale=float(z_scale),
     )
@@ -404,11 +428,18 @@ def run_side(
     crop_height: int,
     domain_index: int,
     frame_proc,
+    domain_count: int = 2,
 ) -> dict[str, object]:
     side_dir = args.output_dir / side
     infer_dir = side_dir / "infer"
     infer_dir.mkdir(parents=True, exist_ok=True)
     provider = FullResZernikeConditioning.from_npz(coeff_map)
+    condition_dim = int(getattr(model, "condition_dim"))
+    feature_dim = condition_feature_dim(
+        condition_dim=condition_dim,
+        domain_count=int(domain_count),
+        domain_index=int(domain_index),
+    )
     tiles = build_liteloc_subfov_tiles(
         field_height=int(crop_height),
         field_width=int(crop_width),
@@ -417,13 +448,14 @@ def run_side(
     )
     runtime_state = {
         "window_size": 3,
-        "conditioning_vector_dim": 10,
+        "conditioning_vector_dim": condition_dim,
+        "condition_feature_dim": feature_dim,
         "conditioning_mode": "film",
         "condition_mode": "film",
         "coeff_maps_npz": str(coeff_map),
         "nat_coeff_maps_path": str(coeff_map),
         "append_domain_onehot": True,
-        "domain_count": 2,
+        "domain_count": int(domain_count),
         "domain_index": int(domain_index),
         "crop_left": int(crop_left),
         "crop_top": int(crop_top),
@@ -438,7 +470,7 @@ def run_side(
         "decode_contract": "liteloc_formal_infer_nms_v1",
         "decode_candidate_threshold": 0.3,
         "decode_adjacent_threshold": 0.6,
-        "decode_accept_threshold": 0.7,
+        "decode_accept_threshold": float(args.decode_accept_threshold),
         "decode_aggregation": "sum",
         "decode_accept_rule": ">",
         "camera_pixel_nm_x": 101.11,
@@ -511,7 +543,8 @@ def run_side(
                             height=int(args.roi_size),
                             width=int(args.roi_size),
                             domain_index=int(domain_index),
-                            domain_count=2,
+                            feature_dim=feature_dim,
+                            domain_count=int(domain_count),
                         )
                     )
                     metas.append(
@@ -535,6 +568,7 @@ def run_side(
                             model=model,
                             device=device,
                             infer_amp=bool(args.infer_amp),
+                            decode_accept_threshold=float(args.decode_accept_threshold),
                             photon_scale=photon_scale,
                             z_scale=z_scale,
                             crop_left=int(crop_left),
@@ -551,6 +585,7 @@ def run_side(
                 model=model,
                 device=device,
                 infer_amp=bool(args.infer_amp),
+                decode_accept_threshold=float(args.decode_accept_threshold),
                 photon_scale=photon_scale,
                 z_scale=z_scale,
                 crop_left=int(crop_left),
@@ -753,7 +788,7 @@ def run_side(
         "decode_effective": {
             "candidate_threshold": 0.3,
             "adjacent_threshold": 0.6,
-            "accept_threshold": 0.7,
+            "accept_threshold": float(args.decode_accept_threshold),
             "aggregation": "sum",
             "accept_rule": ">",
         },
@@ -797,6 +832,8 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = args.checkpoint or (args.run_dir / "checkpoints/checkpoint_latest.pt")
     coeff_maps = final_coeff_maps(args.run_dir)
+    if args.right_coeff_map is not None:
+        coeff_maps["right"] = args.right_coeff_map.resolve()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     print(
         json.dumps(
@@ -834,6 +871,7 @@ def main() -> int:
                     crop_width=int(args.left_crop_width),
                     crop_height=int(args.left_crop_height),
                     domain_index=0,
+                    domain_count=int(args.domain_count),
                     frame_proc=frame_proc,
                 )
             )
@@ -850,7 +888,8 @@ def main() -> int:
                     crop_top=int(args.right_crop_top),
                     crop_width=int(args.right_crop_width),
                     crop_height=int(args.right_crop_height),
-                    domain_index=1,
+                    domain_index=int(args.right_domain_index),
+                    domain_count=int(args.domain_count),
                     frame_proc=frame_proc,
                 )
             )

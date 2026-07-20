@@ -67,11 +67,15 @@ class ROILibraryConditionBuilder:
         providers_by_domain: dict[str, FullResZernikeConditioning],
         append_domain_onehot: bool = False,
         domain_names: tuple[str, ...] | list[str] = (),
+        condition_feature_dim: int | None = None,
+        condition_dim: int | None = None,
     ) -> None:
         self.providers_by_domain = dict(providers_by_domain)
         self.append_domain_onehot = bool(append_domain_onehot)
         self.domain_names = tuple(str(name) for name in domain_names)
         self.domain_index_by_name = {name: idx for idx, name in enumerate(self.domain_names)}
+        self.condition_feature_dim = None if condition_feature_dim is None else int(condition_feature_dim)
+        self.condition_dim = None if condition_dim is None else int(condition_dim)
 
     def __call__(self, records: Sequence[ROIRecord], model_input: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         vectors = []
@@ -93,10 +97,19 @@ class ROILibraryConditionBuilder:
                 device=device,
                 dtype=dtype,
             )
+            feature_dim = int(condition.shape[0]) if self.condition_feature_dim is None else self.condition_feature_dim
+            if int(condition.shape[0]) >= feature_dim:
+                condition = condition[:feature_dim].contiguous()
+            else:
+                matched = torch.zeros((feature_dim,), dtype=dtype, device=device)
+                matched[: int(condition.shape[0])] = condition
+                condition = matched
             if self.append_domain_onehot:
                 onehot = torch.zeros((len(self.domain_names),), dtype=dtype, device=device)
                 onehot[self.domain_index_by_name[domain_name]] = 1.0
                 condition = torch.cat((condition, onehot), dim=0)
+            if self.condition_dim is not None and int(condition.shape[0]) != self.condition_dim:
+                raise ValueError(f"Expected condition_dim={self.condition_dim}, got {int(condition.shape[0])}")
             vectors.append(condition)
         return model_input, torch.stack(vectors, dim=0).contiguous()
 

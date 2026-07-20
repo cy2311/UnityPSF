@@ -513,6 +513,7 @@ def _online_provider_config(
             "npupil": int(online_cfg.get("npupil", vector_cfg.get("npupil", 128))),
             "vector_psf_size": int(online_cfg.get("vector_psf_size", (online_cfg.get("lut_simulation") or {}).get("psf_size", vector_cfg.get("psf_size", 51)))),
             "vector_batch_size": int(online_cfg.get("vector_batch_size", vector_cfg.get("batch_size", 96))),
+            "zemit0": None if online_cfg.get("zemit0", vector_cfg.get("zemit0")) is None else float(online_cfg.get("zemit0", vector_cfg.get("zemit0"))),
             "lut_field_stride": int((online_cfg.get("lut_simulation") or {}).get("field_stride", online_cfg.get("lut_field_stride", 16))),
             "lut_z_steps": int(online_cfg.get("nat_grid_z_steps", (online_cfg.get("lut_simulation") or {}).get("z_steps", online_cfg.get("lut_z_steps", 41)))),
             "lut_subpixel_bins": int((online_cfg.get("lut_simulation") or {}).get("subpixel_bins", online_cfg.get("lut_subpixel_bins", 1))),

@@ -194,6 +194,7 @@ def _renderer_cache_key(
         float(config.refcov),
         float(config.refimm),
         float(config.objstage0),
+        None if config.zemit0 is None else float(config.zemit0),
         tuple(float(v) for v in config.otf_rescale_xy),
     )
 
@@ -647,6 +648,7 @@ class OnlineBatchProviderConfig:
     npupil: int = 128
     vector_psf_size: int = 51
     vector_batch_size: int = 96
+    zemit0: float | None = None
     emitter_density_um2: float | None = None
     lifetime_avg: float = 1.0
     warmup_frames: float = 6.0
@@ -2168,6 +2170,7 @@ def _simulator_config(
         npupil=int(config.npupil),
         vector_psf_size=int(config.vector_psf_size),
         vector_batch_size=int(config.vector_batch_size),
+        zemit0=None if config.zemit0 is None else float(config.zemit0),
         emitter_density_um2=config.emitter_density_um2,
         lifetime_avg=float(config.lifetime_avg),
         warmup_frames=float(config.warmup_frames),

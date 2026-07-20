@@ -33,6 +33,7 @@ class LocalizationSimulatorConfig:
     refcov: float = 1.518
     refimm: float = 1.518
     objstage0: float = 0.0
+    zemit0: float | None = None
     otf_rescale_xy: tuple[float, float] = (0.0, 0.0)
     photon_range: tuple[float, float] | None = None
     photon_mean: float | None = None
@@ -223,6 +224,7 @@ class _VectorEmitterRenderer:
                 refimm=float(config.refimm),
                 objstage0=float(config.objstage0),
                 otf_rescale_xy=tuple(float(v) for v in config.otf_rescale_xy),
+                zemit0=None if config.zemit0 is None else float(config.zemit0),
                 batch_size=int(config.vector_batch_size),
             ),
             device=device,

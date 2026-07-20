@@ -270,6 +270,7 @@ class VectorPSFParams:
     refimm: float
     objstage0: float
     otf_rescale_xy: tuple[float, float]
+    zemit0: float | None = None
     batch_size: int = 64
 
 
@@ -315,6 +316,8 @@ def build_vector_psf_context(
         "npupil": int(params.npupil),
         "psf_size": int(params.psf_size),
     }
+    if params.zemit0 is not None:
+        psf_params["zemit0"] = float(params.zemit0)
     psf = LocalVectorPSFTorchFit(psf_params, req_grad=False, data_type=torch.float32, device=str(device))
     normfac = torch.from_numpy(_noll_normfac(noll_indices)).to(device=device, dtype=torch.float32)
     return VectorPSFContext(

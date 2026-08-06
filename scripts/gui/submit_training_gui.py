@@ -21,10 +21,10 @@ except ImportError:  # pragma: no cover - GUI remains usable without preview.
 
 
 ROOT = Path("/home/guest/Others/main/race")
-NEPTUNE_DIR = ROOT / "neptune_v0.3"
+UNITY_DIR = ROOT / "unity"
 DEFAULT_RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
 TRAINING_SETS_DIR = ROOT / "datasets/training_sets"
-TRAIN_SCRIPT = NEPTUNE_DIR / "train_standard_3367_hqzmap.sh"
+TRAIN_SCRIPT = UNITY_DIR / "scripts/archive/neptune_standard/train_standard_3367_hqzmap.sh"
 SUPPORTED_ZMAP_SAMPLES = ("microtube", "paint", "ncp", "dynamin", "membrane")
 KNOWN_SAMPLE_PATHS = {
     "microtube default": DEFAULT_RAW_TIFF,
@@ -204,7 +204,7 @@ def _default_run_tag(config: SubmissionConfig) -> str:
 
 def _format_export(config: SubmissionConfig) -> dict[str, str]:
     env = {
-        "NEPTUNE_V03_RAW_TIFF_PATH": config.raw_tiff,
+        "NEPTUNE_V04_RAW_TIFF_PATH": config.raw_tiff,
         "ZMAP_SAMPLE_KIND": config.zmap_sample_kind,
         "EPOCHS": str(config.epochs),
         "BATCH_SIZE": str(config.batch_size),
@@ -256,7 +256,7 @@ def _sbatch_command(config: SubmissionConfig) -> list[str]:
 class SubmitTrainingGUI:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("Neptune v0.3 Training Submitter")
+        self.root.title("Neptune v0.4 Training Submitter")
         self.frame_shape: tuple[int, int, int] | None = None
         self.first_frame: np.ndarray | None = None
         self.base_preview = None
@@ -611,7 +611,7 @@ class SubmitTrainingGUI:
         output = (result.stdout or "").strip()
         job_match = re.search(r"Submitted batch job\s+(\d+)", output)
         job_id = job_match.group(1) if job_match else None
-        manifest_dir = NEPTUNE_DIR / ".local/submissions"
+        manifest_dir = UNITY_DIR / ".local/submissions"
         manifest_dir.mkdir(parents=True, exist_ok=True)
         manifest_path = manifest_dir / f"gui_submission_{job_id or int(time.time())}.json"
         manifest = {

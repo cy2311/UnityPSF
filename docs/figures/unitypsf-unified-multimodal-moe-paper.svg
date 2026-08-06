@@ -1,0 +1,286 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title desc">
+  <title id="title">One joint checkpoint instantiates one UnityPSF model for all PSF families</title>
+  <desc id="desc">A publication-style architecture figure presenting UnityPSF as a single multimodal PSF foundation model. One joint checkpoint loads one model with a shared input interface, a hard modality-and-channel router, an internal conditional expert layer for 2D emitter, astigmatism, and double-helix PSFs, and one localization output API.</desc>
+  <defs>
+    <filter id="blur3" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="3.2"/>
+    </filter>
+    <filter id="blur5" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+    <marker id="arrow-dark" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L8 4L0 8Z" fill="#46504e"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L8 4L0 8Z" fill="#397c6b"/>
+    </marker>
+    <style>
+      .t { font-family: 'Liberation Sans', 'Noto Sans CJK SC', sans-serif; fill: #202625; }
+      .title { font-size: 30px; font-weight: 700; }
+      .subtitle { font-size: 15px; font-weight: 400; fill: #5d6765; }
+      .panel-letter { font-size: 22px; font-weight: 700; }
+      .panel-title { font-size: 17px; font-weight: 700; }
+      .model-name { font-size: 31px; font-weight: 700; fill: #286858; }
+      .section { font-size: 12px; font-weight: 700; fill: #687270; }
+      .label { font-size: 13px; font-weight: 700; }
+      .body { font-size: 12px; font-weight: 400; fill: #4d5755; }
+      .small { font-size: 10.5px; font-weight: 400; fill: #697371; }
+      .tiny { font-size: 9px; font-weight: 400; fill: #77817f; }
+      .mono { font-family: 'Liberation Mono', monospace; font-size: 10.5px; fill: #46504e; }
+      .rule { stroke: #cdd3d1; stroke-width: 1; }
+      .light-rule { stroke: #e2e6e5; stroke-width: 1; }
+      .arrow { fill: none; stroke: #46504e; stroke-width: 1.35; marker-end: url(#arrow-dark); }
+      .green-arrow { fill: none; stroke: #397c6b; stroke-width: 1.8; marker-end: url(#arrow-green); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1080" fill="#ffffff"/>
+
+  <text class="t title" x="54" y="47">One joint checkpoint instantiates one UnityPSF model for all PSF families</text>
+  <text class="t subtitle" x="54" y="75">UnityPSF frames multimodal PSF localization as one conditional model: shared identity outside, modality-specific physics inside.</text>
+  <text class="t small" x="1746" y="74" text-anchor="end">target architecture</text>
+  <line class="rule" x1="54" y1="94" x2="1746" y2="94"/>
+
+  <!-- Panel a: PSF diversity -->
+  <text class="t panel-letter" x="54" y="132">a</text>
+  <text class="t panel-title" x="86" y="132">Distinct PSF image manifolds</text>
+  <line class="light-rule" x1="54" y1="148" x2="342" y2="148"/>
+
+  <text class="t small" x="103" y="180" text-anchor="middle">-z</text>
+  <text class="t small" x="199" y="180" text-anchor="middle">focus</text>
+  <text class="t small" x="295" y="180" text-anchor="middle">+z</text>
+  <path d="M91 192 H307" stroke="#9da6a4"/>
+  <path d="M103 187 V197 M199 187 V197 M295 187 V197" stroke="#9da6a4"/>
+
+  <g>
+    <text class="t label" x="67" y="230" fill="#397c6b">2D emitter</text>
+    <rect x="77" y="247" width="66" height="66" fill="#111817"/>
+    <rect x="166" y="247" width="66" height="66" fill="#111817"/>
+    <rect x="255" y="247" width="66" height="66" fill="#111817"/>
+    <circle cx="110" cy="280" r="12" fill="#75b19f" opacity="0.75" filter="url(#blur5)"/><circle cx="110" cy="280" r="4.5" fill="#d6eee7"/>
+    <circle cx="199" cy="280" r="12" fill="#75b19f" opacity="0.75" filter="url(#blur5)"/><circle cx="199" cy="280" r="4.5" fill="#d6eee7"/>
+    <circle cx="288" cy="280" r="12" fill="#75b19f" opacity="0.75" filter="url(#blur5)"/><circle cx="288" cy="280" r="4.5" fill="#d6eee7"/>
+    <text class="t small" x="199" y="330" text-anchor="middle">symmetric intensity profile</text>
+  </g>
+
+  <g>
+    <text class="t label" x="67" y="386" fill="#4d6f91">Astigmatism</text>
+    <rect x="77" y="403" width="66" height="66" fill="#111817"/>
+    <rect x="166" y="403" width="66" height="66" fill="#111817"/>
+    <rect x="255" y="403" width="66" height="66" fill="#111817"/>
+    <ellipse cx="110" cy="436" rx="22" ry="7" fill="#8cb0d0" opacity="0.82" filter="url(#blur3)"/><ellipse cx="110" cy="436" rx="14" ry="3.5" fill="#d9e8f4"/>
+    <circle cx="199" cy="436" r="10" fill="#8cb0d0" opacity="0.82" filter="url(#blur3)"/><circle cx="199" cy="436" r="5" fill="#d9e8f4"/>
+    <ellipse cx="288" cy="436" rx="7" ry="22" fill="#8cb0d0" opacity="0.82" filter="url(#blur3)"/><ellipse cx="288" cy="436" rx="3.5" ry="14" fill="#d9e8f4"/>
+    <text class="t small" x="199" y="486" text-anchor="middle">ellipticity encodes z</text>
+  </g>
+
+  <g>
+    <text class="t label" x="67" y="542" fill="#a05a49">Double helix</text>
+    <rect x="77" y="559" width="66" height="66" fill="#111817"/>
+    <rect x="166" y="559" width="66" height="66" fill="#111817"/>
+    <rect x="255" y="559" width="66" height="66" fill="#111817"/>
+    <g transform="rotate(-52 110 592)"><circle cx="99" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="121" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="99" cy="592" r="4" fill="#f2c6b9"/><circle cx="121" cy="592" r="4" fill="#f2c6b9"/></g>
+    <circle cx="188" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="210" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="188" cy="592" r="4" fill="#f2c6b9"/><circle cx="210" cy="592" r="4" fill="#f2c6b9"/>
+    <g transform="rotate(52 288 592)"><circle cx="277" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="299" cy="592" r="8" fill="#cf8874" opacity="0.8" filter="url(#blur3)"/><circle cx="277" cy="592" r="4" fill="#f2c6b9"/><circle cx="299" cy="592" r="4" fill="#f2c6b9"/></g>
+    <text class="t small" x="199" y="642" text-anchor="middle">lobe rotation encodes z</text>
+  </g>
+
+  <path d="M342 181 V689" stroke="#dce1e0"/>
+  <path d="M321 280 C347 280 347 425 374 425" fill="none" stroke="#397c6b" stroke-width="1.5"/>
+  <path d="M321 436 C347 436 347 446 374 446" fill="none" stroke="#4d6f91" stroke-width="1.5"/>
+  <path d="M321 592 C347 592 347 467 374 467" fill="none" stroke="#a05a49" stroke-width="1.5"/>
+  <circle cx="374" cy="446" r="7" fill="#ffffff" stroke="#53605d" stroke-width="1.4"/>
+
+  <!-- Panel b: one unified model -->
+  <text class="t panel-letter" x="374" y="132">b</text>
+  <text class="t panel-title" x="406" y="132">One joint checkpoint, one conditional MoE model</text>
+  <line class="light-rule" x1="374" y1="148" x2="1468" y2="148"/>
+
+  <rect x="374" y="162" width="1094" height="637" rx="4" fill="#fbfdfc" stroke="#397c6b" stroke-width="2"/>
+  <text class="t model-name" x="408" y="204">UnityPSF</text>
+  <text class="t label" x="408" y="226">multimodal PSF foundation model</text>
+  <text class="t small" x="408" y="246">single load / single save / single inference entry point</text>
+
+  <!-- One joint checkpoint -->
+  <g>
+    <path d="M982 180 H1368 L1392 204 V276 H982 Z" fill="#f5f9f7" stroke="#397c6b" stroke-width="1.4"/>
+    <path d="M1368 180 V204 H1392" fill="none" stroke="#397c6b"/>
+    <text class="t label" x="1006" y="207" fill="#286858">unitypsf_joint.ckpt</text>
+    <text class="t small" x="1006" y="228">one versioned release artifact</text>
+    <rect x="1006" y="244" width="62" height="8" fill="#397c6b"/>
+    <rect x="1072" y="244" width="62" height="8" fill="#4d6f91"/>
+    <rect x="1138" y="244" width="62" height="8" fill="#4d6f91" opacity="0.58"/>
+    <rect x="1204" y="244" width="62" height="8" fill="#a05a49"/>
+    <rect x="1270" y="244" width="62" height="8" fill="#a05a49" opacity="0.58"/>
+    <text class="t tiny" x="1355" y="268" text-anchor="end">expert and channel states inside</text>
+    <path d="M1187 276 V296" class="green-arrow"/>
+  </g>
+
+  <!-- Single input contract -->
+  <path d="M381 446 H420" class="green-arrow"/>
+  <rect x="430" y="310" width="154" height="388" fill="#ffffff" stroke="#9ca7a4"/>
+  <text class="t section" x="507" y="338" text-anchor="middle">One input contract</text>
+  <line x1="448" y1="352" x2="566" y2="352" class="light-rule"/>
+  <g>
+    <rect x="454" y="375" width="106" height="56" fill="#f5f7f6" stroke="#bbc3c1"/>
+    <text class="t mono" x="507" y="399" text-anchor="middle">images</text>
+    <text class="t tiny" x="507" y="416" text-anchor="middle">N x T x H x W</text>
+    <rect x="454" y="450" width="106" height="56" fill="#f5f7f6" stroke="#bbc3c1"/>
+    <text class="t mono" x="507" y="474" text-anchor="middle">modality</text>
+    <text class="t tiny" x="507" y="491" text-anchor="middle">metadata / detector</text>
+    <rect x="454" y="525" width="106" height="56" fill="#f5f7f6" stroke="#bbc3c1"/>
+    <text class="t mono" x="507" y="549" text-anchor="middle">channel_id</text>
+    <text class="t tiny" x="507" y="566" text-anchor="middle">main / left / right</text>
+    <rect x="454" y="600" width="106" height="56" fill="#f5f7f6" stroke="#bbc3c1"/>
+    <text class="t mono" x="507" y="624" text-anchor="middle">conditions</text>
+    <text class="t tiny" x="507" y="641" text-anchor="middle">optics / field / calibration</text>
+  </g>
+  <text class="t small" x="507" y="683" text-anchor="middle">one forward(...) interface</text>
+
+  <!-- Integrated router -->
+  <path d="M584 504 H617" class="arrow"/>
+  <path d="M674 420 L731 504 L674 588 L617 504 Z" fill="#edf5f2" stroke="#397c6b" stroke-width="1.6"/>
+  <text class="t label" x="674" y="483" text-anchor="middle" fill="#286858">PSF router</text>
+  <text class="t mono" x="674" y="504" text-anchor="middle">r(m, c)</text>
+  <text class="t tiny" x="674" y="522" text-anchor="middle">hard one-hot route</text>
+  <text class="t tiny" x="674" y="540" text-anchor="middle">zero gate parameters</text>
+  <path d="M1187 296 C1187 306 674 306 674 414" fill="none" stroke="#397c6b" stroke-width="1.2"/>
+  <text class="t tiny" x="785" y="303">checkpoint restores router, experts, channel states, and calibration index</text>
+
+  <!-- One conditional expert layer -->
+  <rect x="760" y="330" width="505" height="382" fill="#ffffff" stroke="#798582" stroke-width="1.2"/>
+  <text class="t section" x="780" y="356">Conditional expert layer (MoE)</text>
+  <text class="t small" x="1245" y="356" text-anchor="end">one selected row executes per sample</text>
+  <line x1="780" y1="369" x2="1245" y2="369" class="light-rule"/>
+
+  <text class="t tiny" x="819" y="388" text-anchor="middle">preprocess</text>
+  <text class="t tiny" x="930" y="388" text-anchor="middle">full localization backbone</text>
+  <text class="t tiny" x="1054" y="388" text-anchor="middle">FiLM</text>
+  <text class="t tiny" x="1165" y="388" text-anchor="middle">heads / physics / decoder</text>
+
+  <!-- emitter row -->
+  <rect x="776" y="401" width="473" height="86" fill="#f5faf8"/>
+  <rect x="776" y="401" width="7" height="86" fill="#397c6b"/>
+  <text class="t label" x="791" y="423" fill="#397c6b">Emitter2D</text>
+  <text class="t tiny" x="791" y="439">main</text>
+  <rect x="807" y="445" width="53" height="25" fill="#ffffff" stroke="#8da19b"/><text class="t tiny" x="834" y="461" text-anchor="middle">normalize</text>
+  <path d="M865 458 H883" class="arrow"/>
+  <g transform="translate(889 438)"><path d="M0 8L25 2V40L0 34Z" fill="#edf4f1" stroke="#66716e"/><path d="M30 5L58 11V31L30 38Z" fill="#dceae5" stroke="#66716e"/><path d="M63 11L88 16V26L63 31Z" fill="#cfe3dc" stroke="#66716e"/></g>
+  <path d="M983 458 H1005" class="arrow"/>
+  <rect x="1013" y="434" width="74" height="48" fill="#edf5f2" stroke="#397c6b"/><text class="t label" x="1050" y="454" text-anchor="middle" fill="#397c6b">FiLM</text><text class="t tiny" x="1050" y="470" text-anchor="middle">field / optics</text>
+  <path d="M1093 458 H1113" class="arrow"/>
+  <path d="M1121 434H1227L1239 458L1227 482H1121Z" fill="#ffffff" stroke="#7f8b88"/><text class="t small" x="1180" y="453" text-anchor="middle">2D heads + decode</text><text class="t tiny" x="1180" y="470" text-anchor="middle">p, x, y, photons; z = 0</text>
+
+  <!-- astig row -->
+  <rect x="776" y="498" width="473" height="86" fill="#f5f8fb"/>
+  <rect x="776" y="498" width="7" height="86" fill="#4d6f91"/>
+  <text class="t label" x="791" y="520" fill="#4d6f91">Astigmatism</text>
+  <text class="t tiny" x="791" y="536">main | left | right</text>
+  <rect x="807" y="542" width="53" height="25" fill="#ffffff" stroke="#8da0b2"/><text class="t tiny" x="834" y="558" text-anchor="middle">crop</text>
+  <path d="M865 555 H883" class="arrow"/>
+  <g transform="translate(889 535)"><path d="M0 8L25 2V40L0 34Z" fill="#eef2f6" stroke="#66716e"/><path d="M30 5L58 11V31L30 38Z" fill="#e0e7ee" stroke="#66716e"/><path d="M63 11L88 16V26L63 31Z" fill="#d3dfeb" stroke="#66716e"/></g>
+  <path d="M983 555 H1005" class="arrow"/>
+  <rect x="1013" y="531" width="74" height="48" fill="#edf1f5" stroke="#4d6f91"/><text class="t label" x="1050" y="551" text-anchor="middle" fill="#4d6f91">FiLM</text><text class="t tiny" x="1050" y="567" text-anchor="middle">zernike / field</text>
+  <path d="M1093 555 H1113" class="arrow"/>
+  <path d="M1121 531H1227L1239 555L1227 579H1121Z" fill="#ffffff" stroke="#7f8b88"/><text class="t small" x="1180" y="550" text-anchor="middle">SMLM heads + GMM</text><text class="t tiny" x="1180" y="567" text-anchor="middle">p, x, y, z, photons + zmap</text>
+
+  <!-- DH row -->
+  <rect x="776" y="595" width="473" height="101" fill="#fcf7f5"/>
+  <rect x="776" y="595" width="7" height="101" fill="#a05a49"/>
+  <text class="t label" x="791" y="617" fill="#a05a49">Double helix</text>
+  <text class="t tiny" x="791" y="633">main | left | right</text>
+  <rect x="807" y="641" width="53" height="25" fill="#ffffff" stroke="#aa8e86"/><text class="t tiny" x="834" y="657" text-anchor="middle">lobes</text>
+  <path d="M865 654 H883" class="arrow"/>
+  <g transform="translate(889 634)"><path d="M0 8L25 2V40L0 34Z" fill="#f5efed" stroke="#66716e"/><path d="M30 5L58 11V31L30 38Z" fill="#eee3df" stroke="#66716e"/><path d="M63 11L88 16V26L63 31Z" fill="#ead6d0" stroke="#66716e"/></g>
+  <path d="M983 654 H1005" class="arrow"/>
+  <rect x="1013" y="630" width="74" height="48" fill="#f8efec" stroke="#a05a49"/><text class="t label" x="1050" y="650" text-anchor="middle" fill="#a05a49">FiLM</text><text class="t tiny" x="1050" y="666" text-anchor="middle">field / anchor</text>
+  <path d="M1093 654 H1113" class="arrow"/>
+  <path d="M1121 630H1227L1239 654L1227 678H1121Z" fill="#ffffff" stroke="#917a73"/><text class="t small" x="1180" y="649" text-anchor="middle">DH heads + decode</text><text class="t tiny" x="1180" y="666" text-anchor="middle">x, y, z + lobe geometry / LUT</text>
+  <text class="t tiny" x="1012" y="691" text-anchor="middle">each selected channel owns its trained state</text>
+
+  <!-- Common output layer inside the one model -->
+  <path d="M1265 444 H1283 M1265 541 H1283 M1265 647 H1283 M1283 444 V647" fill="none" stroke="#6e7976" stroke-width="1.2"/>
+  <path d="M1283 545 H1300" class="green-arrow"/>
+  <rect x="1310" y="353" width="132" height="356" fill="#f7faf9" stroke="#397c6b"/>
+  <text class="t section" x="1376" y="382" text-anchor="middle">One output layer</text>
+  <line x1="1325" y1="397" x2="1427" y2="397" class="light-rule"/>
+  <text class="t mono" x="1331" y="427">p</text><circle cx="1399" cy="423" r="5" fill="#397c6b"/><circle cx="1416" cy="423" r="3" fill="#397c6b" opacity="0.5"/>
+  <text class="t mono" x="1331" y="468">x, y</text><path d="M1390 464 H1420" stroke="#6f7a77" marker-end="url(#arrow-dark)"/>
+  <text class="t mono" x="1331" y="509">z</text><line x1="1391" y1="505" x2="1421" y2="505" stroke="#6f7a77"/><circle cx="1406" cy="505" r="4" fill="#4d6f91"/>
+  <text class="t mono" x="1331" y="550">photons</text><rect x="1390" y="537" width="8" height="17" fill="#8eaaa2"/><rect x="1403" y="531" width="8" height="23" fill="#628d81"/><rect x="1416" y="524" width="8" height="30" fill="#397c6b"/>
+  <line x1="1325" y1="573" x2="1427" y2="573" class="light-rule"/>
+  <text class="t small" x="1376" y="600" text-anchor="middle">modality auxiliary</text>
+  <text class="t tiny" x="1376" y="619" text-anchor="middle">z-valid / uncertainty</text>
+  <text class="t tiny" x="1376" y="636" text-anchor="middle">lobe geometry</text>
+  <rect x="1329" y="658" width="94" height="31" fill="#eaf3f0" stroke="#90aaa3"/>
+  <text class="t small" x="1376" y="678" text-anchor="middle">PSFExpertOutput</text>
+
+  <path d="M408 744 H1432" class="light-rule"/>
+  <text class="t label" x="408" y="773" fill="#286858">One model identity</text>
+  <text class="t body" x="535" y="773">The router and experts are internal modules of UnityPSF; they are not separate user-facing models.</text>
+
+  <!-- Panel c: one model solves all PSFs -->
+  <text class="t panel-letter" x="1500" y="132">c</text>
+  <text class="t panel-title" x="1532" y="132">One all-PSF localization API</text>
+  <line class="light-rule" x1="1500" y1="148" x2="1746" y2="148"/>
+  <path d="M1468 530 H1506" class="green-arrow"/>
+  <rect x="1516" y="194" width="214" height="560" fill="#ffffff" stroke="#9ca6a3"/>
+  <text class="t label" x="1623" y="224" text-anchor="middle">unitypsf.localize(...)</text>
+  <text class="t small" x="1623" y="244" text-anchor="middle">same call for every PSF</text>
+  <line x1="1536" y1="260" x2="1710" y2="260" class="light-rule"/>
+
+  <text class="t label" x="1540" y="292" fill="#397c6b">2D emitter</text>
+  <text class="t small" x="1540" y="313">x, y, photons</text>
+  <g transform="translate(1652 278)"><circle cx="8" cy="14" r="5" fill="#397c6b"/><circle cx="31" cy="8" r="3" fill="#397c6b" opacity="0.6"/><circle cx="48" cy="20" r="4" fill="#397c6b" opacity="0.8"/><line x1="0" y1="28" x2="58" y2="28" stroke="#9aa4a1"/></g>
+
+  <line x1="1536" y1="340" x2="1710" y2="340" class="light-rule"/>
+  <text class="t label" x="1540" y="372" fill="#4d6f91">Astigmatism</text>
+  <text class="t small" x="1540" y="393">x, y, z, photons</text>
+  <g transform="translate(1652 356)"><circle cx="8" cy="22" r="4" fill="#4d6f91"/><circle cx="30" cy="11" r="4" fill="#4d6f91" opacity="0.68"/><circle cx="50" cy="27" r="4" fill="#4d6f91" opacity="0.45"/><path d="M0 32 H58" stroke="#9aa4a1"/><path d="M4 32 V2" stroke="#9aa4a1"/></g>
+
+  <line x1="1536" y1="420" x2="1710" y2="420" class="light-rule"/>
+  <text class="t label" x="1540" y="452" fill="#a05a49">Double helix</text>
+  <text class="t small" x="1540" y="473">x, y, z, photons</text>
+  <g transform="translate(1652 438)"><g transform="rotate(25 28 17)"><circle cx="18" cy="17" r="6" fill="#a05a49"/><circle cx="39" cy="17" r="6" fill="#a05a49" opacity="0.58"/></g><path d="M48 2 A19 19 0 0 1 57 23" fill="none" stroke="#a05a49"/><path d="M0 34 H58" stroke="#9aa4a1"/></g>
+
+  <line x1="1536" y1="501" x2="1710" y2="501" class="light-rule"/>
+  <text class="t section" x="1540" y="530">Common scientific contract</text>
+  <text class="t small" x="1540" y="555">coordinates</text>
+  <text class="t small" x="1540" y="578">photon scale</text>
+  <text class="t small" x="1540" y="601">uncertainty</text>
+  <text class="t small" x="1540" y="624">filtering / reconstruction</text>
+
+  <rect x="1540" y="657" width="166" height="63" fill="#eef5f2" stroke="#8eaaa2"/>
+  <text class="t label" x="1623" y="681" text-anchor="middle" fill="#286858">All PSF families</text>
+  <text class="t small" x="1623" y="701" text-anchor="middle">one model-facing workflow</text>
+
+  <!-- One checkpoint / one model declaration -->
+  <text class="t panel-letter" x="54" y="850">d</text>
+  <text class="t panel-title" x="86" y="850">Unity is defined at the release boundary: one checkpoint and one model, with sparse experts inside</text>
+  <line class="light-rule" x1="54" y1="866" x2="1746" y2="866"/>
+
+  <path d="M164 903 H460 L482 925 V979 H164 Z" fill="#f5f9f7" stroke="#397c6b" stroke-width="1.4"/>
+  <path d="M460 903 V925 H482" fill="none" stroke="#397c6b"/>
+  <text class="t label" x="188" y="931" fill="#286858">unitypsf_joint.ckpt</text>
+  <text class="t small" x="188" y="953">router + expert registry + channel states + calibration manifest</text>
+  <text class="t tiny" x="188" y="971">one hash / one schema version / one model artifact</text>
+
+  <path d="M482 941 H604" class="green-arrow"/>
+  <rect x="618" y="893" width="320" height="96" rx="4" fill="#eef5f2" stroke="#397c6b" stroke-width="1.5"/>
+  <text class="t model-name" x="778" y="934" text-anchor="middle">UnityPSF</text>
+  <text class="t small" x="778" y="958" text-anchor="middle">one instantiated multimodal MoE model</text>
+  <text class="t tiny" x="778" y="975" text-anchor="middle">conditional parameters are an internal implementation detail</text>
+
+  <path d="M938 941 H1060" class="green-arrow"/>
+  <rect x="1074" y="893" width="560" height="96" fill="#ffffff" stroke="#9ca6a3"/>
+  <text class="t label" x="1100" y="921">One network handles all supported PSFs</text>
+  <circle cx="1110" cy="949" r="5" fill="#397c6b"/><text class="t small" x="1125" y="953">2D emitter</text>
+  <circle cx="1248" cy="949" r="5" fill="#4d6f91"/><text class="t small" x="1263" y="953">astigmatism</text>
+  <circle cx="1395" cy="949" r="5" fill="#a05a49"/><text class="t small" x="1410" y="953">double helix</text>
+  <text class="t tiny" x="1100" y="976">single-channel and dual-channel acquisitions remain configurations of the same model identity</text>
+
+  <line class="rule" x1="54" y1="1024" x2="1746" y2="1024"/>
+  <text class="t label" x="54" y="1053">Takeaway:</text>
+  <text class="t body" x="126" y="1053">UnityPSF exposes one PSF-general model and checkpoint, while internal MoE routing preserves the physics required by each PSF family.</text>
+  <text class="t small" x="1746" y="1053" text-anchor="end">one checkpoint  |  one model  |  all PSFs</text>
+</svg>

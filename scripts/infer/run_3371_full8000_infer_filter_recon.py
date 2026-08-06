@@ -14,34 +14,34 @@ import tifffile
 import torch
 
 ROOT = Path(__file__).resolve().parents[3]
-NEPTUNE_DIR = Path(__file__).resolve().parents[2]
-SRC_ROOT = NEPTUNE_DIR / "src"
+UNITY_DIR = Path(__file__).resolve().parents[2]
+SRC_ROOT = UNITY_DIR / "src"
 NEPTUNE_IWAE_ROOT = ROOT / "neptune_iwae"
 for path in (ROOT, SRC_ROOT, NEPTUNE_IWAE_ROOT):
     if str(path) not in sys.path:
         sys.path.insert(0, str(path))
 
 from Normalization import build_inference_frame_normalizer
-from neptune_v03.config import load_config
-from neptune_v03.infer_recon.degrid import default_reconstruction_predictions, degrid_predictions_h5
-from neptune_v03.infer_recon.predictions_io import H5PredictionWriter
-from neptune_v03.infer_recon.tiling import (
+from unity_psf.config import load_config
+from unity_psf.infer_recon.degrid import default_reconstruction_predictions, degrid_predictions_h5
+from unity_psf.infer_recon.predictions_io import H5PredictionWriter
+from unity_psf.infer_recon.tiling import (
     build_liteloc_subfov_tiles,
     emitter_in_valid_core,
     tile_local_to_field_coordinates,
 )
-from neptune_v03.localization import build_localization_model_registry, build_localization_runtime_config
-from neptune_v03.localization.conditioning import FullResZernikeConditioning
-from neptune_v03.localization.legacy_decode import decode_liteloc_formal_infer_emitters
+from unity_psf.localization import build_localization_model_registry, build_localization_runtime_config
+from unity_psf.localization.conditioning import FullResZernikeConditioning
+from unity_psf.localization.legacy_decode import decode_liteloc_formal_infer_emitters
 
 
 RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
 RUN_3371 = (
-    NEPTUNE_DIR
+    UNITY_DIR
     / "output/standard_3367_fast_route_roi96_psf25_fresh_hqzmap_emit500_round20_p1baseline_3052lr_start30_interval5_emit5000_epoch300_bs24_steps417_3371"
     / "standard_3367_fast_route_roi96_psf25_fresh_hqzmap_emit500_round20_p1baseline_3052lr_start30_interval5_emit5000_epoch300_bs24_steps417_3371_3371"
 )
-CONFIG = NEPTUNE_DIR / "configs/microtube_base.yaml"
+CONFIG = UNITY_DIR / "configs/base/microtube.yaml"
 
 FIELDNAMES = [
     "frame",
@@ -125,7 +125,7 @@ def unique_prob_values(values: Iterable[float]) -> list[float]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="3371 v0.3 full 8000-frame infer -> filter/recon, ROI96 keep80.")
+    parser = argparse.ArgumentParser(description="3371 v0.4 full 8000-frame infer -> filter/recon, ROI96 keep80.")
     parser.add_argument("--run-dir", type=Path, default=RUN_3371)
     parser.add_argument("--config", type=Path, default=CONFIG)
     parser.add_argument("--checkpoint", type=Path, default=None)
@@ -182,7 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-crop-top", type=int, default=0)
     parser.add_argument("--right-crop-width", type=int, default=600)
     parser.add_argument("--right-crop-height", type=int, default=1200)
-    parser.add_argument("--infer-recon-root", type=Path, default=SRC_ROOT / "neptune_v03" / "infer_recon")
+    parser.add_argument("--infer-recon-root", type=Path, default=SRC_ROOT / "unity_psf" / "infer_recon")
     parser.add_argument("--input-preprocess", choices=("fd_deeploc_recenter", "raw_adu"), default="fd_deeploc_recenter")
     parser.add_argument("--overwrite-output", action="store_true", default=False)
     parser.add_argument("--infer-amp", action="store_true", default=True)
@@ -643,7 +643,7 @@ def run_side(
     if bool(args.rcc_drift):
         if not bool(args.degrid):
             raise ValueError("standard RCC drift correction requires degrid to be enabled")
-        rcc_script = NEPTUNE_DIR / "scripts" / "analysis" / "run_rcc_drift_diagnostic.py"
+        rcc_script = UNITY_DIR / "scripts" / "analysis" / "run_rcc_drift_diagnostic.py"
         if not rcc_script.is_file():
             raise FileNotFoundError(rcc_script)
         rcc_cmd = [
@@ -755,7 +755,6 @@ def run_side(
             str(args.radius_mode),
             "--filtered-format",
             "h5",
-            "--keep-filtered-predictions",
         ]
         if args.display_imax is not None:
             cmd.extend(["--display-imax", str(args.display_imax)])
@@ -781,6 +780,13 @@ def run_side(
                 "filter_summary": str(filter_dir / "filter_summary.json"),
             }
         )
+    removed_intermediates = []
+    corrected_predictions = infer_dir / "predictions_degrid_rcc_corrected.h5"
+    if corrected_predictions.is_file():
+        for intermediate in (infer_dir / "predictions_raw.h5", infer_dir / "predictions_degrid.h5"):
+            if intermediate.is_file():
+                intermediate.unlink()
+                removed_intermediates.append(str(intermediate))
     summary = {
         "side": side,
         "predictions": str(pred_path),
@@ -808,6 +814,8 @@ def run_side(
         "rcc_frame_block_size": int(args.rcc_frame_block_size),
         "reconstruction_coordinate_source": reconstruction_coordinate_source,
         "reconstruction_predictions": str(pred_for_filter),
+        "intermediate_cleanup": "after_successful_filter_reconstruction",
+        "removed_intermediates": removed_intermediates,
         "filter_recon_dir": filter_runs[-1]["filter_recon_dir"] if filter_runs else None,
         "filter_runs": filter_runs,
         "raw_rows": int(total_rows),

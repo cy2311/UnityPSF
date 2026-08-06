@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Standard Neptune v0.3 single-channel infer -> filter/recon.
+# Standard UnityPSF v0.4 single-channel infer -> filter/recon.
 #
 # Required:
 #   RUN_DIR=/path/to/training/run
@@ -14,21 +14,21 @@
 #   final filter/recon: prob >= 0.7, SMAP-style fixed sigma 14 nm, no locprec/LLrel/PSF-size hard gate
 #   formal decode: fixed LiteLoc NMS contract, integrated probability > 0.7
 
-#SBATCH --job-name=nv03_ch_infer
+#SBATCH --job-name=nv04_ch_infer
 #SBATCH --partition=cpu1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=12:00:00
-#SBATCH --output=/home/guest/Others/main/race/neptune_v0.3/logs/slurm/nv03_ch_infer-%j.out
-#SBATCH --error=/home/guest/Others/main/race/neptune_v0.3/logs/slurm/nv03_ch_infer-%j.err
+#SBATCH --output=/home/guest/Others/main/race/unity/logs/slurm/nv04_ch_infer-%j.out
+#SBATCH --error=/home/guest/Others/main/race/unity/logs/slurm/nv04_ch_infer-%j.err
 
 set -euo pipefail
 
-ROOT="${NEPTUNE_V03_ROOT:-/home/guest/Others/main/race}"
-NEPTUNE_DIR="$ROOT/neptune_v0.3"
-PYTHON="${NEPTUNE_V03_PYTHON:-/home/guest/anaconda3/bin/python}"
-INFER_RECON_ROOT="${INFER_RECON_ROOT:-$NEPTUNE_DIR/src/neptune_v03/infer_recon}"
+ROOT="${UNITY_V04_ROOT:-${NEPTUNE_V04_ROOT:-${NEPTUNE_V03_ROOT:-/home/guest/Others/main/race}}}"
+UNITY_DIR="$ROOT/unity"
+PYTHON="${UNITY_V04_PYTHON:-${NEPTUNE_V04_PYTHON:-${NEPTUNE_V03_PYTHON:-/home/guest/anaconda3/bin/python}}}"
+INFER_RECON_ROOT="${INFER_RECON_ROOT:-$UNITY_DIR/src/unity_psf/infer_recon}"
 SIDE="${SIDE:-left}"
 
 if [[ "$SIDE" != "left" && "$SIDE" != "right" ]]; then
@@ -36,7 +36,7 @@ if [[ "$SIDE" != "left" && "$SIDE" != "right" ]]; then
   exit 2
 fi
 if [[ -z "${RUN_DIR:-}" ]]; then
-  echo "RUN_DIR is required and must point to a completed Neptune v0.3 training run." >&2
+  echo "RUN_DIR is required and must point to a completed Neptune v0.4 training run." >&2
   exit 2
 fi
 if [[ ! -s "$RUN_DIR/checkpoints/checkpoint_latest.pt" ]]; then
@@ -48,18 +48,18 @@ if [[ ! -s "$RUN_DIR/metadata/current_physical_state.json" ]]; then
   exit 3
 fi
 
-mkdir -p "$NEPTUNE_DIR/logs/slurm" "$NEPTUNE_DIR/output"
+mkdir -p "$UNITY_DIR/logs/slurm" "$UNITY_DIR/output"
 cd "$ROOT"
 
-export PYTHONPATH="$ROOT:$NEPTUNE_DIR/src:${PYTHONPATH:-}"
-export MPLCONFIGDIR="$NEPTUNE_DIR/.local/cache/matplotlib"
+export PYTHONPATH="$ROOT:$UNITY_DIR/src:${PYTHONPATH:-}"
+export MPLCONFIGDIR="$UNITY_DIR/.local/cache/matplotlib"
 export PYTHONUNBUFFERED=1
 
-SAMPLE_TIFF="${SAMPLE_TIFF:-${NEPTUNE_V03_RAW_TIFF_PATH:-$ROOT/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}}"
-CONFIG="${CONFIG:-$NEPTUNE_DIR/configs/microtube_base.yaml}"
+SAMPLE_TIFF="${SAMPLE_TIFF:-${NEPTUNE_V04_RAW_TIFF_PATH:-${NEPTUNE_V03_RAW_TIFF_PATH:-$ROOT/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}}}"
+CONFIG="${CONFIG:-$UNITY_DIR/configs/base/microtube.yaml}"
 RUN_BASENAME="$(basename "$RUN_DIR")"
 RUN_NAME="${RUN_NAME:-${RUN_BASENAME}_${SIDE}_infer_recon_full8000_roi96_valid80_cut8_prob070_smap_fixed14nm}"
-OUTPUT_DIR="${OUTPUT_DIR:-$NEPTUNE_DIR/output/$RUN_NAME}"
+OUTPUT_DIR="${OUTPUT_DIR:-$UNITY_DIR/output/$RUN_NAME}"
 mkdir -p "$MPLCONFIGDIR"
 
 EXTRA_ARGS=()
@@ -91,7 +91,7 @@ if [[ -n "${NORMALIZATION_FOV:-}" ]]; then
   EXTRA_ARGS+=(--normalization-fov "$NORMALIZATION_FOV")
 fi
 
-"$PYTHON" "$NEPTUNE_DIR/scripts/infer/run_3371_full8000_infer_filter_recon.py" \
+"$PYTHON" "$UNITY_DIR/scripts/infer/run_3371_full8000_infer_filter_recon.py" \
   --run-dir "$RUN_DIR" \
   --config "$CONFIG" \
   --checkpoint "${CHECKPOINT:-$RUN_DIR/checkpoints/checkpoint_latest.pt}" \

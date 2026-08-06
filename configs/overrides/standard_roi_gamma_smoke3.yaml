@@ -1,6 +1,6 @@
 phase_retrieval:
   input:
-    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+    tiff_path: ${NEPTUNE_V04_RAW_TIFF_PATH}
 train:
   device: cuda:0
   epochs: 3
@@ -54,7 +54,7 @@ train:
     feedback_enabled: true
     feedback_interval_steps: 417
   real_tiff_wake:
-    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+    tiff_path: ${NEPTUNE_V04_RAW_TIFF_PATH}
   roi_bank_gamma:
     enabled: true
     update_interval_epochs: 1

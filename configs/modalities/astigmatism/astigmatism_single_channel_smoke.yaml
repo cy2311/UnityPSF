@@ -1,0 +1,75 @@
+schema_version: "0.4"
+
+optical:
+  NA: 1.4
+  pixel_size_nm_x: 101.11
+  pixel_size_nm_y: 98.83
+  wavelength_nm: 660.0
+  n_medium: 1.518
+
+train:
+  device: cpu
+  epochs: 1
+  batch_size: 1
+  max_batches: 1
+  input_frame_spec:
+    input_frame_channels: 3
+    frame_order: temporal
+  channel_layout:
+    channels:
+      - id: main
+  expert:
+    name: astigmatism
+    instance_id: main
+    channel_id: main
+  model:
+    name: astigmatism_expert
+    params:
+      depth_shared: 1
+      depth_union: 1
+      nfeatures_init: 4
+      nfeatures_inter: 4
+      condition_fields:
+        - zernike_0
+        - zernike_1
+        - field_x
+        - field_y
+      film_hidden_dim: 4
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.001
+  scaling:
+    photon_max: 10.0
+    z_max: 1.0
+    bg_max: 1.0
+  eval:
+    enabled: true
+    source: online_generation
+    seed: 6201
+    batch_count: 1
+    batch_size: 1
+    match_dims: 3
+    dist_tol_xy_nm: 250.0
+    dist_tol_z_nm: 500.0
+  online_generation:
+    enabled: true
+    channels: 3
+    height: 8
+    width: 8
+    emitters_per_sample: 1
+    steps_per_epoch: 1
+    background: 0.0
+    signal: 10.0
+    conditioning_mode: film
+    condition_feature_dim: 4
+    condition_dim: 4
+    simulation_backend: native
+    simulation_output_device: cpu
+    psf_type: vector
+    npupil: 8
+    vector_psf_size: 5
+    vector_batch_size: 1
+    nat_grid_size: 1
+    domain_balance_mode: fixed
+    dual_domain_coeff_maps: []

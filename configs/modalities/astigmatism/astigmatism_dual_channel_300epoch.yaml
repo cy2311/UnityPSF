@@ -1,0 +1,153 @@
+schema_version: "unitypsf.instance_training.v1"
+
+optical:
+  NA: 1.4
+  pixel_size_nm_x: 101.11
+  pixel_size_nm_y: 98.83
+  wavelength_nm: 660.0
+  n_medium: 1.518
+
+camera:
+  qe: 0.9
+  read_sigma: 0.0
+  spurious_charge: 0.002
+  em_gain: 1.0
+  e_per_adu: 1.020784562122306
+  baseline: 398.6
+
+train:
+  device: cuda
+  epochs: 300
+  batch_size: 24
+  input_frame_spec:
+    input_frame_channels: 3
+    frame_order: temporal
+  channel_layout:
+    frame_size: [1200, 1200]
+    channels:
+      - id: left
+        crop: [0, 0, 600, 1200]
+        anchor_profile: astigmatism_660nm
+      - id: right
+        crop: [600, 0, 600, 1200]
+        anchor_profile: astigmatism_660nm
+  expert:
+    name: astigmatism
+  model:
+    name: astigmatism_expert
+    params:
+      depth_shared: 2
+      depth_union: 2
+      nfeatures_init: 48
+      nfeatures_inter: null
+      norm_start_level: -1
+      norm_groups: 0
+      activation: ELU
+      dropout_start_level: null
+      p_dropout: -0.1
+      pool_mode: StrideConv
+      upsample_mode: nearest
+      inter_activation: ELU
+      norm_head_groups: 0
+      final_activation: ELU
+      kaiming_normal: true
+      depthwise: true
+      condition_fields:
+        - field_x
+        - field_y
+        - zernike_nm_mean:n2_m0
+        - zernike_nm_mean:n3_m1
+        - zernike_nm_mean:n3_m-1
+        - zernike_nm_mean:n4_m0
+        - zernike_nm_mean:n3_m-3
+        - zernike_nm_mean:n3_m3
+      condition_dim: 8
+      film_hidden_dim: 32
+  loss:
+    name: active_smlm_gmm_loss
+    params:
+      photon_scale: 31000.0
+      z_scale: 0.6
+      gmm_target_chunk: 4
+      gmm_component_chunk: 64
+      gmm_backend: mixture_same_family
+      target_order: legacy_iwae
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.0006
+      weight_decay: 0.1
+  scaling:
+    photon_max: 31000.0
+    z_max: 0.6
+    bg_max: 240.0
+  eval:
+    enabled: true
+    source: online_generation
+    seed: 100000
+    batch_count: 4
+    batch_size: 4
+    match_dims: 3
+    dist_tol_xy_nm: 250.0
+    dist_tol_z_nm: 500.0
+  online_generation:
+    enabled: true
+    channels: 3
+    height: 96
+    width: 96
+    emitters_per_sample: 8
+    steps_per_epoch: 417
+    emitter_density_um2: 0.5
+    background_range: [110.0, 110.0]
+    photon_range: [0.0, 31000.0]
+    photon_mean_sigma: [20000.0, 1000.0]
+    conditioning_mode: film
+    conditioning_profile: astigmatism_660nm
+    condition_feature_dim: 8
+    condition_dim: 8
+    batch_strategy: cached_window
+    sequence_count: 64
+    cached_window_order: auto
+    cached_window_max_gpu_sequences: 2
+    grad_clip_norm: 0.03
+    amp_enabled: true
+    amp_dtype: float16
+    lifetime_avg: 1.0
+    warmup_frames: 6.0
+    simulation_backend: lut
+    simulation_output_device: renderer
+    psf_type: vector
+    npupil: 128
+    vector_psf_size: 25
+    vector_batch_size: 1024
+    nat_grid_size: [2, 2]
+    nat_grid_z_steps: 41
+    lut_simulation:
+      field_stride: 16
+      field_mode: global_field
+      storage_dtype: fp16
+      subpixel_bins: 1
+    field_origin_sampling_mode: sliding_window
+    field_origin_stride_px: 88
+    z_range: [-0.6, 0.6]
+    domain_balance_mode: fixed
+    dual_domain_coeff_maps:
+      - name: left
+        coeff_maps_npz: /home/guest/Others/main/race/neptune_v0.3/output/high_quality_initial_zmap/microtube_formal_order2_frame1000_emit500_round20_p1baseline_recomputed_3392/left/export_nat_zmap/preferred_full_roi_zernike_maps_nm.npz
+      - name: right
+        coeff_maps_npz: /home/guest/Others/main/race/neptune_v0.3/output/high_quality_initial_zmap/microtube_formal_order2_frame1000_emit500_round20_p1baseline_recomputed_3392/right/export_nat_zmap/preferred_full_roi_zernike_maps_nm.npz
+
+smlm_overrides:
+  lr_scheduler: StepLR
+  lr_step_size: 10
+  lr_gamma: 0.9
+  lr_step_unit: epoch
+
+metadata:
+  modality: astigmatism
+  formal_training_contract: unitypsf.formal.v1
+  channel_contract: left_right_spatial_split
+  anchor_profile: astigmatism_660nm
+  anchor_nm: 99.0
+  real_sample_tiff: /home/guest/Others/main/race/datasets/training_sets/microtubule_3d_800mw_7_1
+  reference_run: /home/guest/Others/main/race/results/microtube_right_benchmark_20260711/runs/neptune_v03_fd_nat/training_dual_anchor99_gamma10_conditionfix

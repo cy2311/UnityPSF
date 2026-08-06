@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "neptune-v03"
-version = "0.3.0"
-description = "Clean Neptune v0.3 SMLM ROI-bank gamma optimization package."
+name = "unity-psf"
+version = "0.4.0"
+description = "UnityPSF v0.4 multimodal SMLM localization research package."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
   "torch",
   "h5py",
   "tifffile",
+  "matplotlib",
 ]
 
 [project.optional-dependencies]
@@ -22,13 +23,21 @@ dev = [
 ]
 
 [project.scripts]
-neptune-v03-materialize-config = "neptune_v03.config.materialize:main"
-neptune-v03-gamma-update-monitor = "neptune_v03.diagnostics.gamma_update_monitor:main"
-neptune-v03-train-localization = "neptune_v03.training.run_localization:main"
-neptune-v03-train-high-fidelity = "neptune_v03.training.run_high_fidelity:main"
+unity-psf-materialize-config = "unity_psf.config.materialize:main"
+unity-psf-gamma-update-monitor = "unity_psf.diagnostics.gamma_update_monitor:main"
+unity-psf-train-localization = "unity_psf.training.run_localization:main"
+unity-psf-train-high-fidelity = "unity_psf.training.run_high_fidelity:main"
+unity-psf-train-multichannel = "unity_psf.cli.multichannel:main"
+unity-psf-train-joint = "unity_psf.cli.train_joint:main"
+unity-psf-train-modality-joint = "unity_psf.cli.train_modality_joint:main"
+unity-psf-train-joint-expert-parallel = "unity_psf.cli.train_joint_expert_parallel:main"
+unity-psf-checkpoint = "unity_psf.cli.joint_checkpoint:main"
+unity-psf-calibrate-double-helix = "unity_psf.cli.double_helix:calibrate_double_helix"
+unity-psf-evaluate-double-helix = "unity_psf.cli.double_helix:evaluate_double_helix"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["neptune_v04*", "unity_psf*", "double_helix*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

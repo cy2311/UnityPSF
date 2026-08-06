@@ -22,7 +22,7 @@ SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from neptune_v03.infer_recon.recon.render_subpixel import (
+from unity_psf.infer_recon.recon.render_subpixel import (
     NEPTUNE_DEFAULT_IMAX_MIN,
     _colorize_density_display,
     _normalize_display,
@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sample-tiff", type=Path, default=RAW_TIFF)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ratio-threshold", type=float, default=0.4)
+    parser.add_argument("--color-mode", choices=("binary", "channel_z_gradient"), default="binary")
     parser.add_argument("--union-dist-px", type=float, default=2.0)
     parser.add_argument("--union-policy", choices=("right_priority_union", "matched_only"), default="right_priority_union")
     parser.add_argument("--signal-radius", type=int, default=2)
@@ -68,6 +69,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--batch-size", type=int, default=65536)
     parser.add_argument("--max-frame", type=int, default=None)
+    parser.add_argument("--emitter-z-min", "--emitter-z-min-nm", dest="emitter_z_min_nm", type=float, default=None)
+    parser.add_argument("--emitter-z-max", "--emitter-z-max-nm", dest="emitter_z_max_nm", type=float, default=None)
     parser.add_argument("--log-every-frames", type=int, default=500)
     parser.add_argument("--uncertainty-scale", type=float, default=1.0)
     parser.add_argument("--uncertainty-min-sigma-px", type=float, default=0.75)
@@ -79,6 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--display-imax", type=float, default=None)
     parser.add_argument("--display-imax-min", type=float, default=NEPTUNE_DEFAULT_IMAX_MIN)
     parser.add_argument("--normalization-fov", type=str, default=None, metavar="X0,Y0,WIDTH,HEIGHT")
+    parser.add_argument("--save-ratio-map", action="store_true")
     parser.add_argument("--suffix", default="union_raw_ratio_bicolor_thr040_right_priority")
     return parser.parse_args()
 
@@ -241,6 +245,41 @@ def read_h5(path: Path) -> dict[str, np.ndarray]:
         if missing:
             raise KeyError(f"{path} missing columns: {missing}")
         return {key: np.asarray(group[key][:]) for key in columns}
+
+
+def filter_emitters_by_z(
+    predictions: dict[str, np.ndarray],
+    *,
+    z_min_nm: float | None,
+    z_max_nm: float | None,
+) -> dict[str, np.ndarray]:
+    if z_min_nm is None and z_max_nm is None:
+        return predictions
+    z_nm = predictions["z"].astype(np.float32, copy=False)
+    keep = np.isfinite(z_nm)
+    if z_min_nm is not None:
+        keep &= z_nm > float(z_min_nm)
+    if z_max_nm is not None:
+        keep &= z_nm < float(z_max_nm)
+    return {key: values[keep] for key, values in predictions.items()}
+
+
+def channel_z_colors(
+    z_nm: np.ndarray,
+    right_class: np.ndarray,
+    *,
+    z_min_nm: float,
+    z_max_nm: float,
+) -> np.ndarray:
+    scale = max(float(z_max_nm) - float(z_min_nm), 1e-6)
+    depth = np.clip((z_nm.astype(np.float32, copy=False) - float(z_min_nm)) / scale, 0.0, 1.0)[:, None]
+    left_low = np.asarray([0.02, 0.05, 0.35], dtype=np.float32)
+    left_high = np.asarray([0.10, 1.00, 1.00], dtype=np.float32)
+    right_low = np.asarray([0.35, 0.02, 0.08], dtype=np.float32)
+    right_high = np.asarray([1.00, 0.82, 0.06], dtype=np.float32)
+    left_colors = left_low + depth * (left_high - left_low)
+    right_colors = right_low + depth * (right_high - right_low)
+    return np.where(right_class[:, None], right_colors, left_colors).astype(np.float32, copy=False)
 
 
 def frame_index(frame: np.ndarray, max_frame: int | None) -> tuple[np.ndarray, dict[int, tuple[int, int]]]:
@@ -509,8 +548,18 @@ def render(rows: dict[str, np.ndarray], args: argparse.Namespace) -> tuple[np.nd
     prob = rows["prob"].astype(np.float32)
     colors = np.zeros((x.size, 3), dtype=np.float32)
     high = ratio >= float(args.ratio_threshold)
-    colors[high] = np.asarray([1.0, 0.12, 0.08], dtype=np.float32)
-    colors[~high] = np.asarray([0.05, 0.55, 1.0], dtype=np.float32)
+    if str(args.color_mode) == "channel_z_gradient":
+        if args.emitter_z_min_nm is None or args.emitter_z_max_nm is None:
+            raise ValueError("channel_z_gradient requires --emitter-z-min and --emitter-z-max")
+        colors = channel_z_colors(
+            rows["z"],
+            high,
+            z_min_nm=float(args.emitter_z_min_nm),
+            z_max_nm=float(args.emitter_z_max_nm),
+        )
+    else:
+        colors[high] = np.asarray([1.0, 0.12, 0.08], dtype=np.float32)
+        colors[~high] = np.asarray([0.05, 0.55, 1.0], dtype=np.float32)
     weights = np.ones_like(prob) if str(args.render_weight) == "count" else prob
     colors *= weights[:, None]
     ratio_colors = plt.get_cmap("turbo")(np.clip(ratio, 0.0, 1.0))[:, :3].astype(np.float32) * weights[:, None]
@@ -570,10 +619,6 @@ def save_rgb(canvas: np.ndarray, density: np.ndarray, path: Path, *, args: argpa
     rgb = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     Image.fromarray(rgb, mode="RGB").save(path)
     tifffile.imwrite(path.with_suffix(".tiff"), rgb, photometric="rgb")
-    linear_density_path = path.with_name(f"{path.stem}_density_linear_float32.tiff")
-    linear_rgb_path = path.with_name(f"{path.stem}_rgb_linear_float32.tiff")
-    tifffile.imwrite(linear_density_path, density.astype(np.float32, copy=False))
-    tifffile.imwrite(linear_rgb_path, canvas.astype(np.float32, copy=False), photometric="rgb")
     return {
         "display_mode": str(args.display_mode),
         "display_imax": float(imax),
@@ -581,8 +626,6 @@ def save_rgb(canvas: np.ndarray, density: np.ndarray, path: Path, *, args: argpa
         "display_imax_min": float(args.display_imax_min),
         "display_quantile": _smap_quantile_from_imax_min(float(args.display_imax_min)) if str(args.display_mode) == "quantile" else None,
         "normalization_fov_rendered_px": list(normalization_fov) if normalization_fov is not None else None,
-        "linear_density_path": str(linear_density_path),
-        "linear_rgb_path": str(linear_rgb_path),
     }
 
 
@@ -593,6 +636,10 @@ def main() -> int:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     left = read_h5(args.left_predictions)
     right = read_h5(args.right_predictions)
+    left_unfiltered_count = int(left["z"].size)
+    right_unfiltered_count = int(right["z"].size)
+    left = filter_emitters_by_z(left, z_min_nm=args.emitter_z_min_nm, z_max_nm=args.emitter_z_max_nm)
+    right = filter_emitters_by_z(right, z_min_nm=args.emitter_z_min_nm, z_max_nm=args.emitter_z_max_nm)
     if args.left_to_right_dx_px is not None or args.left_to_right_dy_px is not None:
         left_to_right_dx_px = float(args.left_to_right_dx_px or 0.0)
         left_to_right_dy_px = float(args.left_to_right_dy_px or 0.0)
@@ -673,6 +720,10 @@ def main() -> int:
     )
     buffers: dict[str, list[np.ndarray]] = {key: [] for key in keys}
     stats = {
+        "left_unfiltered": left_unfiltered_count,
+        "right_unfiltered": right_unfiltered_count,
+        "emitter_z_min_nm": args.emitter_z_min_nm,
+        "emitter_z_max_nm": args.emitter_z_max_nm,
         "left_raw": 0,
         "right_raw": 0,
         "union_total": 0,
@@ -774,7 +825,7 @@ def main() -> int:
     dual_png = args.output_dir / f"{args.suffix}.png"
     ratio_png = args.output_dir / f"{args.suffix}_ratio_map.png"
     dual_display = save_rgb(dual_canvas, density, dual_png, args=args)
-    ratio_display = save_rgb(ratio_canvas, density, ratio_png, args=args)
+    ratio_display = save_rgb(ratio_canvas, density, ratio_png, args=args) if args.save_ratio_map else None
     ratio = rows["ratio_right"].astype(np.float32)
     source = rows["source"].astype(np.int32)
     color = rows["color_class"].astype(np.int32)
@@ -786,9 +837,10 @@ def main() -> int:
         "output_h5": str(out_h5),
         "dual_png": str(dual_png),
         "dual_tiff": str(dual_png.with_suffix(".tiff")),
-        "ratio_png": str(ratio_png),
-        "ratio_tiff": str(ratio_png.with_suffix(".tiff")),
+        "ratio_png": str(ratio_png) if args.save_ratio_map else None,
+        "ratio_tiff": str(ratio_png.with_suffix(".tiff")) if args.save_ratio_map else None,
         "ratio_threshold": float(args.ratio_threshold),
+        "color_mode": str(args.color_mode),
         "render_pixel_nm": float(args.render_pixel_nm),
         "spot_radius_nm": float(args.spot_radius_nm),
         "radius_mode": str(args.radius_mode),
@@ -802,6 +854,10 @@ def main() -> int:
         "alignment": alignment,
         "alignment_qc_before": alignment_before,
         "alignment_qc_after": alignment_after,
+        "left_unfiltered": int(stats["left_unfiltered"]),
+        "right_unfiltered": int(stats["right_unfiltered"]),
+        "emitter_z_min_nm": stats["emitter_z_min_nm"],
+        "emitter_z_max_nm": stats["emitter_z_max_nm"],
         "left_raw": int(stats["left_raw"]),
         "right_raw": int(stats["right_raw"]),
         "union_total": int(stats["union_total"]),

@@ -25,11 +25,12 @@ except ImportError:  # pragma: no cover - preview falls back to metadata-only mo
 
 
 ROOT = Path("/home/guest/Others/main/race")
-NEPTUNE_DIR = ROOT / "neptune_v0.3"
+UNITY_DIR = ROOT / "unity"
 TRAINING_SETS_DIR = ROOT / "datasets/training_sets"
 DEFAULT_RAW_TIFF = ROOT / "neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
-TRAIN_SCRIPT = NEPTUNE_DIR / "train_standard_3367_hqzmap.sh"
-PIPELINE_SCRIPT = NEPTUNE_DIR / "run_standard_pipeline.sh"
+LEGACY_ENTRY_ROOT = UNITY_DIR / "scripts/archive/neptune_standard"
+TRAIN_SCRIPT = LEGACY_ENTRY_ROOT / "train_standard_3367_hqzmap.sh"
+PIPELINE_SCRIPT = LEGACY_ENTRY_ROOT / "run_standard_pipeline.sh"
 SUPPORTED_ZMAP_SAMPLES = ("microtube", "paint", "ncp", "dynamin", "membrane")
 WORKFLOW_MODES = ("train_infer_recon", "train_only")
 CHANNEL_MODES = ("dual", "left", "right")
@@ -203,7 +204,7 @@ def _default_run_tag(config: SubmissionConfig) -> str:
 def _format_export(config: SubmissionConfig) -> dict[str, str]:
     valid_roi_size = max(1, int(config.roi_size) - 16)
     env = {
-        "NEPTUNE_V03_RAW_TIFF_PATH": config.raw_tiff,
+        "NEPTUNE_V04_RAW_TIFF_PATH": config.raw_tiff,
         "SAMPLE_TIFF": config.raw_tiff,
         "PIPELINE_MODE": "train_infer" if config.workflow_mode == "train_infer_recon" else "train_infer",
         "CHANNEL_MODE": config.channel_mode,
@@ -420,7 +421,7 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Neptune v0.3 Slurm Submitter</title>
+  <title>Neptune v0.4 Slurm Submitter</title>
   <style>
     body {{ margin: 0; font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202124; background: #f6f7f8; }}
     main {{ display: grid; grid-template-columns: minmax(420px, 560px) 1fr; gap: 16px; padding: 16px; }}
@@ -461,7 +462,7 @@ def _html_page(message: str = "", form: dict[str, str] | None = None) -> str:
 <main>
   {top_status_html}
   <form method="post">
-    <h1>Neptune v0.3 Slurm Submitter</h1>
+    <h1>Neptune v0.4 Slurm Submitter</h1>
     <section>
       <h2>Dataset</h2>
       <div class="row">
@@ -553,7 +554,7 @@ class SubmitHandler(BaseHTTPRequestHandler):
                 output = (result.stdout or "").strip()
                 job_match = re.search(r"(?:Submitted batch job|train_job=)\s*(?:=)?\s*(\d+)", output)
                 job_id = job_match.group(1) if job_match else None
-                manifest_dir = NEPTUNE_DIR / ".local/submissions"
+                manifest_dir = UNITY_DIR / ".local/submissions"
                 manifest_dir.mkdir(parents=True, exist_ok=True)
                 manifest_path = manifest_dir / f"web_submission_{job_id or int(time.time())}.json"
                 manifest = {
@@ -581,12 +582,12 @@ class SubmitHandler(BaseHTTPRequestHandler):
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Start the Neptune v0.3 web Slurm submitter.")
+    parser = argparse.ArgumentParser(description="Start the Neptune v0.4 web Slurm submitter.")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     server = ThreadingHTTPServer((args.host, int(args.port)), SubmitHandler)
-    print(f"Neptune v0.3 web submitter: http://{args.host}:{args.port}")
+    print(f"Neptune v0.4 web submitter: http://{args.host}:{args.port}")
     server.serve_forever()
     return 0
 

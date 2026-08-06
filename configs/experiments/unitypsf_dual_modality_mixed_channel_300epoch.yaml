@@ -1,0 +1,30 @@
+schema_version: unitypsf.joint_training.v1
+execution: expert_parallel
+rank_assignment: one_modality_per_rank
+epochs: 300
+
+instances:
+  - key: emitter_2d:left
+    config: project://configs/modalities/emitter_2d/emitter_2d_single_channel_300epoch.yaml
+    model_seed: 4101
+    data_seed: 4111
+    step_budget: 417
+  - key: astigmatism:left
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4211
+    step_budget: 417
+  - key: astigmatism:right
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4212
+    step_budget: 417
+
+metadata:
+  training_scope: dual_modality_mixed_channel
+  joint_checkpoint: unitypsf_joint.ckpt
+  origami_raw_root: /home/guest/Others/main/race/datasets/training_sets/origami_2d
+  astigmatism_raw_tiff: /home/guest/Others/main/race/datasets/training_sets/microtubule_3d_800mw_7_1
+  supervision_source: online_physical_simulation
+  steps_per_epoch: 417
+  epochs_per_instance: 300

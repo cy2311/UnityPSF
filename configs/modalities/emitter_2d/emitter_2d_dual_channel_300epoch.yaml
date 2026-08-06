@@ -1,0 +1,163 @@
+schema_version: "unitypsf.instance_training.v1"
+
+optical:
+  NA: 1.4
+  pixel_size_nm_x: 101.11
+  pixel_size_nm_y: 98.83
+  wavelength_nm: 660.0
+  n_medium: 1.518
+
+camera:
+  qe: 0.9
+  read_sigma: 1.821280869
+  spurious_charge: 0.002
+  em_gain: 1.0
+  e_per_adu: 1.020784562122306
+  baseline: 99.78090423787435
+
+train:
+  device: cuda
+  epochs: 300
+  batch_size: 24
+  input_frame_spec:
+    input_frame_channels: 3
+    frame_order: temporal
+  channel_layout:
+    frame_size: [1200, 1200]
+    channels:
+      - id: left
+        crop: [0, 0, 600, 1200]
+        calibration_ref: origami_2d_left_sample_peak_nat
+      - id: right
+        crop: [600, 0, 600, 1200]
+        calibration_ref: origami_2d_right_sample_peak_nat
+  expert:
+    name: emitter_2d
+  model:
+    name: emitter_2d_expert
+    params:
+      depth_shared: 2
+      depth_union: 2
+      nfeatures_init: 48
+      nfeatures_inter: null
+      norm_start_level: -1
+      norm_groups: 0
+      activation: ELU
+      dropout_start_level: null
+      p_dropout: -0.1
+      pool_mode: StrideConv
+      upsample_mode: nearest
+      inter_activation: ELU
+      norm_head_groups: 0
+      final_activation: ELU
+      kaiming_normal: true
+      depthwise: true
+      condition_fields:
+        - field_x
+        - field_y
+        - zernike_nm_mean:n2_m0
+        - zernike_nm_mean:n3_m1
+        - zernike_nm_mean:n3_m-1
+        - zernike_nm_mean:n4_m0
+        - zernike_nm_mean:n3_m-3
+        - zernike_nm_mean:n3_m3
+      condition_dim: 8
+      film_hidden_dim: 32
+      disabled_attr: [3]
+  loss:
+    name: active_smlm_gmm_loss
+    params:
+      disable_attr: 3
+      photon_scale: 31000.0
+      z_scale: 0.1
+      gmm_target_chunk: 4
+      gmm_component_chunk: 64
+      gmm_backend: mixture_same_family
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.0006
+      weight_decay: 0.1
+  scaling:
+    photon_max: 31000.0
+    z_max: 0.1
+    bg_max: 240.0
+  eval:
+    enabled: true
+    source: online_generation
+    seed: 5101
+    batch_count: 8
+    batch_size: 24
+    match_dims: 2
+    dist_tol_xy_nm: 250.0
+    dist_tol_z_nm: null
+  online_generation:
+    enabled: true
+    channels: 3
+    height: 96
+    width: 96
+    emitters_per_sample: 8
+    steps_per_epoch: 417
+    emitter_density_um2: 0.5
+    background_range: [110.0, 110.0]
+    photon_range: [0.0, 31000.0]
+    photon_mean_sigma: [20000.0, 1000.0]
+    conditioning_mode: film
+    conditioning_profile: zero
+    condition_feature_dim: 8
+    condition_dim: 8
+    batch_strategy: cached_window
+    sequence_count: 64
+    cached_window_order: auto
+    cached_window_max_gpu_sequences: 4
+    grad_clip_norm: 0.03
+    amp_enabled: true
+    amp_dtype: float16
+    lifetime_avg: 1.0
+    warmup_frames: 6.0
+    simulation_backend: lut
+    simulation_output_device: renderer
+    psf_type: vector
+    npupil: 128
+    vector_psf_size: 15
+    vector_batch_size: 1024
+    nat_grid_size: [2, 2]
+    nat_grid_z_steps: 21
+    lut_simulation:
+      field_stride: 16
+      field_mode: global_field
+      storage_dtype: fp16
+      subpixel_bins: 1
+      z_steps: 21
+    field_origin_sampling_mode: sliding_window
+    field_origin_stride_px: 88
+    z_range: [-0.1, 0.1]
+    domain_balance_mode: fixed
+    dual_domain_coeff_maps:
+      - name: left
+        coeff_maps_npz: /home/guest/Others/main/race/unity/output/unitypsf/calibration/origami-emitter-2d-left/stages/peak/export_nat_zmap/preferred_full_roi_zernike_maps_nm.npz
+      - name: right
+        coeff_maps_npz: /home/guest/Others/main/race/unity/output/unitypsf/calibration/origami-emitter-2d-right/stages/peak/export_nat_zmap/preferred_full_roi_zernike_maps_nm.npz
+
+smlm_overrides:
+  lr_scheduler: StepLR
+  lr_step_size: 10
+  lr_gamma: 0.9
+  lr_step_unit: epoch
+
+metadata:
+  modality: emitter_2d
+  formal_training_contract: unitypsf.formal.v1
+  channel_contract: left_right_spatial_split
+  psf_initialization: explicit_zero_zernike_anchor_then_origami_sample_peak_nat
+  real_sample_root: /home/guest/Others/main/race/datasets/training_sets/origami_2d
+  real_sample_acquisition: /home/guest/Others/main/race/datasets/training_sets/origami_2d/spool_2d-640nm100mw-cy3-0_647n-5nM_50ms_1
+  real_sample_frames: 8000
+  initial_zernike_coefficients_nm:
+    n2_m0: 0.0
+    n2_m2: 0.0
+    n2_m-2: 0.0
+  peak_nat_config_left: /home/guest/Others/main/race/unity/configs/calibration/origami_emitter_2d_left_peak_nat.json
+  peak_nat_config_right: /home/guest/Others/main/race/unity/configs/calibration/origami_emitter_2d_right_peak_nat.json
+  origami_crop_left: [0, 0, 600, 1200]
+  origami_crop_right: [600, 0, 600, 1200]

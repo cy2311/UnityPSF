@@ -15,8 +15,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from neptune_v03.config import materialize_config
-from neptune_v03.training.run_high_fidelity import main as run_high_fidelity_main
+from unity_psf.config import materialize_config
+from unity_psf.training.run_high_fidelity import main as run_high_fidelity_main
 
 
 def parse_args() -> argparse.Namespace:
@@ -164,8 +164,8 @@ def _override_payload(
             "online_generation": {
                 "enabled": True,
                 "steps_per_epoch": 1,
-                "height": 8,
-                "width": 8,
+                "height": 4,
+                "width": 4,
                 "channels": 3,
                 "emitters_per_sample": 1,
                 "signal": 10.0,
@@ -181,6 +181,17 @@ def _override_payload(
                     {"name": "right", "coeff_maps_npz": str(right_map)},
                 ],
             },
+            "peak_zmap_bootstrap": {
+                "enabled": True,
+                "frame_start": int(frame_start),
+                "frame_stop": int(frame_stop),
+                "max_emitters": 2,
+                "alternating_rounds": 1,
+                "alternating_local_steps": 1,
+                "alternating_global_steps": 1,
+                "approximate_fit_steps": 1,
+                "filter_emitters_by_ncc": False,
+            },
             "real_tiff_wake": {
                 "enabled": True,
                 "tiff_path": str(raw_path),
@@ -189,9 +200,16 @@ def _override_payload(
                         "name": "left",
                         "crop_left": int(crop_left),
                         "crop_top": int(crop_top),
-                        "crop_width": int(crop_width),
+                        "crop_width": max(1, int(crop_width) // 2),
                         "crop_height": int(crop_height),
-                    }
+                    },
+                    {
+                        "name": "right",
+                        "crop_left": int(crop_left) + max(1, int(crop_width) // 2),
+                        "crop_top": int(crop_top),
+                        "crop_width": int(crop_width) - max(1, int(crop_width) // 2),
+                        "crop_height": int(crop_height),
+                    },
                 ],
             },
             "roi_bank_gamma": {
@@ -202,7 +220,7 @@ def _override_payload(
                 "gamma_steps": 2,
                 "gamma_lr": 0.05,
                 "num_posterior_samples": 2,
-                "roi_size_px": min(8, int(crop_height), int(crop_width)),
+                "roi_size_px": min(4, int(crop_height), int(crop_width)),
                 "roi_bank_frame_range": [int(frame_start), int(frame_stop)],
                 "roi_bank_grid_shape": [2, 2],
                 "roi_library_max_rois": 2,

@@ -1,6 +1,6 @@
-# Neptune v0.3
+# UnityPSF v0.4
 
-Neptune v0.3 is a research package for SMLM localization training with online
+UnityPSF v0.4 is a research package for SMLM localization training with online
 simulation, ROI-bank posterior sampling, and physical-model gamma updates from
 real raw TIFF data.
 
@@ -15,13 +15,84 @@ raw TIFF -> peak bootstrap -> loc training -> fixed ROI library -> posterior sam
 ## Repository Layout
 
 ```text
-configs/        Base and override YAML configs.
-docs/           Architecture notes, parity specs, and baseline references.
-scripts/        Reusable diagnostics and SLURM submission scripts.
-src/            Installable neptune_v03 Python package.
-tests/          Unit and smoke tests.
-standard.py     Default batch-budget route validator/submission helper.
+configs/        Base, modality, experiment, calibration, and override configs.
+scripts/        Reusable diagnostics, SLURM jobs, and archived legacy entry points.
+src/            Installable UnityPSF Python packages.
+src/double_helix/  Deprecated DH compatibility wrappers.
+scripts/archive/double_helix_sweeps/  Historical DH calibration and sweep jobs.
+scripts/archive/neptune_standard/  Historical Neptune standard workflow.
 ```
+
+The active public namespace is `unity_psf`. The legacy `neptune_v04` namespace
+remains as an advisory compatibility alias while consumers are migrated. New
+installations publish only `unity-psf-*` command names. The model family name is **UnityPSF**: one localization model for
+multiple PSF modalities.
+
+The package build discovers only packages under `src`: the active
+`src/unity_psf` package, the thin `src/neptune_v04` compatibility shim, and
+the installable `src/double_helix` entry points. Historical SLURM commands
+remain runnable from `double_helix.legacy` modules in
+`scripts/archive/double_helix_sweeps/`, while reusable physics modules are owned
+by the UnityPSF optics namespace. The top-level `double_helix` package contains
+only compatibility adapters.
+
+## Dual-Modality PSF MoE
+
+The current UnityPSF milestone is one modality- and channel-routed hard MoE
+model with one release checkpoint:
+
+```text
+unitypsf_joint.ckpt
+    +-- Emitter2DExpert(main)
+    +-- AstigmatismExpert(left)
+    +-- AstigmatismExpert(right)
+```
+
+Each entry is a complete expert instance with its own localization backbone,
+FiLM parameters, calibration, and physical state. During training, every
+instance also owns its optimizer and scheduler. The Astigmatism left and right
+instances may start from the same prototype, but they do not share parameters
+or training state. There is no shared image stem in this formal path.
+
+The public model is `UnityPSF`. Its router selects exactly one instance by
+`(modality, channel_id)`, and every expert returns the common 10-channel SMLM
+output contract. The release format is `unity_psf.joint_checkpoint.v2`: one
+network per PSF modality with independently stored measurement-channel state.
+The v1 per-instance format remains readable for compatibility and assembly.
+
+```python
+import torch
+from unity_psf.models import UnityPSF
+
+model = UnityPSF.from_checkpoint("unitypsf_joint.ckpt", device="cuda:0")
+images = torch.randn(1, 3, 96, 96)
+conditions = torch.zeros(1, 4)  # zernike_0, zernike_1, field_x, field_y
+result = model.localize(
+    images,
+    modality="astigmatism",
+    channel_id="left",
+    conditions=conditions,
+)
+```
+
+The single-process reference trainer and three-rank Expert Parallel trainer
+use the same model and checkpoint contract:
+
+```bash
+unity-psf-train-joint \
+  --config configs/experiments/unitypsf_dual_modality_multichannel_smoke.yaml
+
+sbatch scripts/train/unitypsf_dual_modality_expert_parallel.sbatch
+
+unity-psf-checkpoint verify /path/to/unitypsf_joint.ckpt
+unity-psf-checkpoint inspect /path/to/unitypsf_joint.ckpt
+```
+
+The currently supported modalities are `emitter_2d` and `astigmatism`.
+Double Helix is deliberately absent from the release checkpoint until real DH
+training and calibration data pass scientific validation. The image-only raw
+TIFF modality detector is also future work; current formal routing is explicit
+and deterministic.
 
 Runtime artifacts are intentionally local-only:
 
@@ -36,9 +107,9 @@ Those runtime directories are ignored by Git and should not be committed.
 ## Standard End-to-End Entry
 
 ```bash
-cd neptune_v0.3
-python -m pip install -e ".[dev]"
-python -m pytest
+git clone <UnityPSF repository URL>
+cd UnityPSF
+python -m pip install -e .
 ```
 
 The current standard route is the 3371-style fast route:
@@ -55,8 +126,8 @@ raw TIFF
 Submit the full standard pipeline:
 
 ```bash
-export NEPTUNE_V03_RAW_TIFF_PATH=/path/to/raw_stack.ome.tif
-bash run_standard_pipeline.sh
+export UNITY_V04_RAW_TIFF_PATH=/path/to/raw_stack.ome.tif
+bash scripts/archive/neptune_standard/run_standard_pipeline.sh
 ```
 
 The training and pipeline entry points infer the high-quality initial-zmap
@@ -70,13 +141,14 @@ added, rather than silently falling back to the microtube preset.
 For manual submission, override only after validating the preset:
 
 ```bash
-ZMAP_SAMPLE_KIND=paint NEPTUNE_V03_RAW_TIFF_PATH=/path/to/paint_stack.ome.tif sbatch train_standard_3367_hqzmap.sh
+ZMAP_SAMPLE_KIND=paint UNITY_V04_RAW_TIFF_PATH=/path/to/paint_stack.ome.tif \
+  sbatch scripts/archive/neptune_standard/train_standard_3367_hqzmap.sh
 ```
 
 For the local GUI submitter:
 
 ```bash
-./run_gui_submit.sh
+./scripts/archive/neptune_standard/run_gui_submit.sh
 ```
 
 The GUI previews the first TIFF frame, draws the left/right crop boxes, infers
@@ -109,21 +181,21 @@ from an existing completed training run:
 ```bash
 PIPELINE_MODE=infer_only \
 RUN_DIR=/path/to/output/<run_tag>/<run_name_jobid> \
-bash run_standard_pipeline.sh
+bash scripts/archive/neptune_standard/run_standard_pipeline.sh
 ```
 
 Low-level training scripts remain available for controlled experiments:
 
 ```bash
-sbatch train_standard_3367_hqzmap.sh
-sbatch train_standard_3367.sh
-sbatch train_standard_3367_peakbootstrap.sh
-python standard.py --check
+sbatch scripts/archive/neptune_standard/train_standard_3367_hqzmap.sh
+sbatch scripts/archive/neptune_standard/train_standard_3367.sh
+sbatch scripts/archive/neptune_standard/train_standard_3367_peakbootstrap.sh
+python scripts/archive/neptune_standard/standard.py --check
 ```
 
 ## Multicolor Reconstruction
 
-The default v0.3 ratiometric multicolor reconstruction is a union-based raw
+The default v0.4 ratiometric multicolor reconstruction is a union-based raw
 ratio route, matching the validated Neptune-IWAE multicolor workflow:
 
 ```text
@@ -162,7 +234,15 @@ sbatch scripts/infer/run_3371_union_raw_ratio_bicolor.sbatch
 
 Implemented:
 
-- Installable `src/neptune_v03` package.
+- Installable `src/unity_psf` package with a temporary `neptune_v04` import shim.
+- One top-level `UnityPSF` model with exact `(modality, channel_id)` hard routing.
+- Complete and independent `Emitter2DExpert(main)`,
+  `AstigmatismExpert(left)`, and `AstigmatismExpert(right)` instances.
+- Atomic, integrity-checked `unity_psf.joint_checkpoint.v2` release/resume files,
+  with compatibility loading for v1 checkpoints.
+- Single-process round-robin and three-rank Expert Parallel joint training.
+- Modality/channel-separated training reports, overlays, reconstructions, and
+  physical-state availability panels.
 - YAML base/override config materialization.
 - High-fidelity training entrypoint and batch-budget default route.
 - Online cached-window localization batch provider.
@@ -173,7 +253,14 @@ Implemented:
 - Per-domain ROI-bank gamma updates with feedback coeff-map export.
 - Gamma monitor metrics, held-out loss monitoring, and diagnostic artifacts.
 - Union-based raw-TIFF ratiometric multicolor reconstruction.
-- Tests for config, runtime, localization, ROI bank, gamma update, peak, and training loop behavior.
+
+Engineering status:
+
+- The complete synthetic contract suite passes, and the 3-GPU SLURM smoke run
+  completed with one joint checkpoint and successful route reloads.
+- This is an engineering milestone, not a scientific performance claim. The
+  first scientific baseline still requires real Origami and Astigmatism
+  left/right data, real peak-zmap/gamma state, and human review of the report.
 
 Out of scope for the public repository:
 

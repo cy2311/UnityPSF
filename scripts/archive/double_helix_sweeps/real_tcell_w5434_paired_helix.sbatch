@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=dh_w5434_pair
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --time=08:00:00
+#SBATCH --output=/home/guest/Others/main/race/unity/logs/slurm/dh_w5434_pair-%j.out
+
+set -euo pipefail
+
+RACE_ROOT=/home/guest/Others/main/race
+V04_ROOT=${UNITY_V04_ROOT:-${NEPTUNE_V04_ROOT:-${RACE_ROOT}/unity}}
+SOURCE_TIFF=${RACE_ROOT}/datasets/training_sets/double_helix/Real_dataset_Tcell/Calib.tif
+BASELINE_ROOT=${V04_ROOT}/output/double_helix/real_tcell_deepz_mode64_weight_sweep_z2000/w5434/calibration
+OUTPUT_ROOT=${V04_ROOT}/output/double_helix/real_tcell_deepz_mode64_weight_sweep_z2000/w5434_paired_helix/calibration
+CALIBRATION_TIFF=${OUTPUT_ROOT}/inputs/real_tcell_calib_cut1_17px.tif
+
+mkdir -p "${V04_ROOT}/logs/slurm" "${OUTPUT_ROOT}/inputs"
+nvidia-smi
+export MPLCONFIGDIR="${RACE_ROOT}/.local/cache/matplotlib"
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="${V04_ROOT}/src"
+/home/guest/anaconda3/bin/python -c 'import torch; print("cuda_available", torch.cuda.is_available()); print("gpu_name", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")'
+/home/guest/anaconda3/bin/python -c 'import sys; import tifffile; source=tifffile.imread(sys.argv[1]); tifffile.imwrite(sys.argv[2], source[:, 5:22, 40:57], imagej=True, metadata={"axes": "ZYX"})' "${SOURCE_TIFF}" "${CALIBRATION_TIFF}"
+/home/guest/anaconda3/bin/python -m double_helix.run_calibration \
+  --calibration-tiff "${CALIBRATION_TIFF}" \
+  --warm-start-gamma "${BASELINE_ROOT}/arrays/gamma_coefficients.npz" \
+  --output-dir "${OUTPUT_ROOT}" \
+  --mode-count 64 \
+  --device cuda \
+  --wavelength-nm 660 \
+  --na 1.27 \
+  --refractive-index 1.33 \
+  --pixel-size-nm 207 \
+  --z-step-nm 40 \
+  --z-index-origin 1 \
+  --z-sign 1 \
+  --npupil 128 \
+  --psf-size 17 \
+  --adam-steps 2000 \
+  --fit-z-range-nm 2000 \
+  --learning-rate-schedule cosine \
+  --minimum-learning-rate-ratio 0.1 \
+  --restart-count 4 \
+  --warm-start-noise-nm 5 \
+  --optimize-z-calibration \
+  --z-calibration-learning-rate 0.01 \
+  --deep-z-loss \
+  --poisson-loss-weight 1 \
+  --ncc-loss-weight 2 \
+  --lobe-geometry-loss-weight 3 \
+  --paired-helix-loss-weight 3 \
+  --paired-angle-weight 2 \
+  --paired-separation-weight 1 \
+  --paired-center-weight 0.5 \
+  --z-bin-edges-nm 500 1000 1500 \
+  --z-bin-weights 5 4 3 4 \
+  --seed 20260726
+
+/home/guest/anaconda3/bin/python -m double_helix.legacy.render_calibration_diagnostics \
+  --calibration-dir "${OUTPUT_ROOT}" \
+  --pixel-size-nm 207
+
+/home/guest/anaconda3/bin/python -m double_helix.legacy.render_extended_z_diagnostics \
+  --calibration-dir "${OUTPUT_ROOT}" \
+  --source-tiff "${SOURCE_TIFF}" \
+  --z-limit-nm 2000 \
+  --selected-plane-count 17 \
+  --device cuda

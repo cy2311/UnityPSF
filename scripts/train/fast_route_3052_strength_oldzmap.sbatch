@@ -4,20 +4,20 @@
 # - ROI128, PSF51, start epoch 30, update every 5 epochs
 # - 5000 projected emitters and posterior probability quality gate
 
-#SBATCH --job-name=nv03_f3052
+#SBATCH --job-name=nv04_f3052
 #SBATCH --partition=cpu1
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=72:00:00
-#SBATCH --output=/home/guest/Others/main/race/neptune_v0.3/logs/slurm/nv03_f3052-%j.out
-#SBATCH --error=/home/guest/Others/main/race/neptune_v0.3/logs/slurm/nv03_f3052-%j.err
+#SBATCH --output=/home/guest/Others/main/race/unity/logs/slurm/nv04_f3052-%j.out
+#SBATCH --error=/home/guest/Others/main/race/unity/logs/slurm/nv04_f3052-%j.err
 
 set -euo pipefail
 
-ROOT="${NEPTUNE_V03_ROOT:-/home/guest/Others/main/race}"
-NEPTUNE_DIR="$ROOT/neptune_v0.3"
-PY="${NEPTUNE_V03_PYTHON:-/home/guest/anaconda3/bin/python}"
+ROOT="${UNITY_V04_ROOT:-${NEPTUNE_V04_ROOT:-${NEPTUNE_V03_ROOT:-/home/guest/Others/main/race}}}"
+UNITY_DIR="$ROOT/unity"
+PY="${UNITY_V04_PYTHON:-${NEPTUNE_V04_PYTHON:-${NEPTUNE_V03_PYTHON:-/home/guest/anaconda3/bin/python}}}"
 NAT_CONFIG_KIND="${NAT_CONFIG_KIND:-order1_13}"
 
 ZMAP_LEFT="${ZMAP_LEFT:-$ROOT/neptune_iwae/test_data/microtube/zmap/left/alternating_full_roi_zernike_maps_nm.npz}"
@@ -25,18 +25,18 @@ ZMAP_RIGHT="${ZMAP_RIGHT:-$ROOT/neptune_iwae/test_data/microtube/zmap/right/alte
 export ZMAP_LEFT
 export ZMAP_RIGHT
 
-export PYTHONPATH="$NEPTUNE_DIR/src"
-export MPLCONFIGDIR="$NEPTUNE_DIR/.local/cache/matplotlib"
-export NEPTUNE_V03_RAW_TIFF_PATH="${NEPTUNE_V03_RAW_TIFF_PATH:-$ROOT/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}"
+export PYTHONPATH="$UNITY_DIR/src"
+export MPLCONFIGDIR="$UNITY_DIR/.local/cache/matplotlib"
+export NEPTUNE_V04_RAW_TIFF_PATH="${NEPTUNE_V04_RAW_TIFF_PATH:-${NEPTUNE_V03_RAW_TIFF_PATH:-$ROOT/neptune_iwae/test_data/microtube/raw/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 export APPEND_DOMAIN_ONEHOT="${APPEND_DOMAIN_ONEHOT:-1}"
 export DOMAIN_BALANCE_MODE="${DOMAIN_BALANCE_MODE:-alternate_step}"
-export NEPTUNE_V03_PROJECTION_BACKEND="${NEPTUNE_V03_PROJECTION_BACKEND:-triton_fused}"
-export NEPTUNE_V03_CACHED_WINDOW_PRECOMPUTE="${NEPTUNE_V03_CACHED_WINDOW_PRECOMPUTE:-1}"
-export NEPTUNE_V03_LUT_EPOCH_PREWARM="${NEPTUNE_V03_LUT_EPOCH_PREWARM:-1}"
-export NEPTUNE_V03_LUT_SHIFT_BACKEND="${NEPTUNE_V03_LUT_SHIFT_BACKEND:-fourier}"
-export NEPTUNE_V03_PROFILE_TIMING="${NEPTUNE_V03_PROFILE_TIMING:-1}"
-export NEPTUNE_V03_PROFILE_SYNC_CUDA="${NEPTUNE_V03_PROFILE_SYNC_CUDA:-1}"
+export NEPTUNE_V04_PROJECTION_BACKEND="${NEPTUNE_V04_PROJECTION_BACKEND:-${NEPTUNE_V03_PROJECTION_BACKEND:-triton_fused}}"
+export NEPTUNE_V04_CACHED_WINDOW_PRECOMPUTE="${NEPTUNE_V04_CACHED_WINDOW_PRECOMPUTE:-${NEPTUNE_V03_CACHED_WINDOW_PRECOMPUTE:-1}}"
+export NEPTUNE_V04_LUT_EPOCH_PREWARM="${NEPTUNE_V04_LUT_EPOCH_PREWARM:-${NEPTUNE_V03_LUT_EPOCH_PREWARM:-1}}"
+export NEPTUNE_V04_LUT_SHIFT_BACKEND="${NEPTUNE_V04_LUT_SHIFT_BACKEND:-${NEPTUNE_V03_LUT_SHIFT_BACKEND:-fourier}}"
+export NEPTUNE_V04_PROFILE_TIMING="${NEPTUNE_V04_PROFILE_TIMING:-${NEPTUNE_V03_PROFILE_TIMING:-1}}"
+export NEPTUNE_V04_PROFILE_SYNC_CUDA="${NEPTUNE_V04_PROFILE_SYNC_CUDA:-${NEPTUNE_V03_PROFILE_SYNC_CUDA:-1}}"
 
 BATCH_SIZE="${BATCH_SIZE:-24}"
 STEPS_PER_EPOCH="${STEPS_PER_EPOCH:-417}"
@@ -72,15 +72,15 @@ export RIGHT_DOMAIN_CROP_LEFT RIGHT_DOMAIN_CROP_TOP RIGHT_DOMAIN_CROP_WIDTH RIGH
 RUN_TAG="${RUN_TAG:-fast_route_roi128_psf51_oldzmap_3052lr_start30_interval5_emit5000_qualitygate_epoch${EPOCHS}_bs${BATCH_SIZE}_steps${STEPS_PER_EPOCH}}"
 INITIAL_ZMAP_TAG="${INITIAL_ZMAP_TAG:-3052_old_zmap}"
 STANDARD_NOTE="${STANDARD_NOTE:-Fast LUT/prewarm/projection route with ROI128, PSF51, initial zmap, start30 interval5, target_projected_emitters=5000, explicit posterior quality gates, and 3052 scheduler parity: StepLR(step_size=10, gamma=0.9) stepped once per epoch.}"
-RUN_ROOT="$NEPTUNE_DIR/output/$RUN_TAG"
+RUN_ROOT="$UNITY_DIR/output/$RUN_TAG"
 RUN_NAME="${RUN_TAG}_${SLURM_JOB_ID:-local}"
-OVERRIDE_CONFIG="$NEPTUNE_DIR/.local/tmp/standard/${RUN_TAG}.yaml"
-RESOLVED_CONFIG="$NEPTUNE_DIR/.local/tmp/standard/resolved_${RUN_TAG}_${SLURM_JOB_ID:-local}.yaml"
+OVERRIDE_CONFIG="$UNITY_DIR/.local/tmp/standard/${RUN_TAG}.yaml"
+RESOLVED_CONFIG="$UNITY_DIR/.local/tmp/standard/resolved_${RUN_TAG}_${SLURM_JOB_ID:-local}.yaml"
 
 mkdir -p \
-  "$NEPTUNE_DIR/.local/cache/matplotlib" \
-  "$NEPTUNE_DIR/.local/tmp/standard" \
-  "$NEPTUNE_DIR/logs/slurm" \
+  "$UNITY_DIR/.local/cache/matplotlib" \
+  "$UNITY_DIR/.local/tmp/standard" \
+  "$UNITY_DIR/logs/slurm" \
   "$RUN_ROOT"
 
 if [[ ! -s "$ZMAP_LEFT" ]]; then
@@ -95,7 +95,7 @@ fi
 cat > "$OVERRIDE_CONFIG" <<YAML
 train:
   real_tiff_wake:
-    tiff_path: ${NEPTUNE_V03_RAW_TIFF_PATH}
+    tiff_path: ${NEPTUNE_V04_RAW_TIFF_PATH}
     domains:
       - name: left
         crop_left: ${LEFT_DOMAIN_CROP_LEFT}
@@ -227,14 +227,14 @@ echo "lr_step_unit=${LR_STEP_UNIT}"
 echo "lr_step_size=${LR_STEP_SIZE}"
 echo "lr_gamma=${LR_GAMMA}"
 echo "cuda_visible_devices=${CUDA_VISIBLE_DEVICES}"
-echo "raw_tiff=${NEPTUNE_V03_RAW_TIFF_PATH}"
+echo "raw_tiff=${NEPTUNE_V04_RAW_TIFF_PATH}"
 echo "left_domain_crop=${LEFT_DOMAIN_CROP_LEFT},${LEFT_DOMAIN_CROP_TOP},${LEFT_DOMAIN_CROP_WIDTH},${LEFT_DOMAIN_CROP_HEIGHT}"
 echo "right_domain_crop=${RIGHT_DOMAIN_CROP_LEFT},${RIGHT_DOMAIN_CROP_TOP},${RIGHT_DOMAIN_CROP_WIDTH},${RIGHT_DOMAIN_CROP_HEIGHT}"
 echo "initial_zmap_left=${ZMAP_LEFT}"
 echo "initial_zmap_right=${ZMAP_RIGHT}"
 echo "initial_zmap_tag=${INITIAL_ZMAP_TAG}"
-echo "projection_backend=${NEPTUNE_V03_PROJECTION_BACKEND}"
-echo "lut_epoch_prewarm=${NEPTUNE_V03_LUT_EPOCH_PREWARM}"
+echo "projection_backend=${NEPTUNE_V04_PROJECTION_BACKEND}"
+echo "lut_epoch_prewarm=${NEPTUNE_V04_LUT_EPOCH_PREWARM}"
 echo "run_root=${RUN_ROOT}"
 echo "run_name=${RUN_NAME}"
 
@@ -244,9 +244,9 @@ from pathlib import Path
 import numpy as np
 import tifffile
 import torch
-from neptune_v03.optics import build_named_nat_config
+from unity_psf.optics import build_named_nat_config
 
-raw = os.environ["NEPTUNE_V03_RAW_TIFF_PATH"]
+raw = os.environ["NEPTUNE_V04_RAW_TIFF_PATH"]
 cfg = build_named_nat_config(os.environ.get("NAT_CONFIG_KIND", "order1_13"), img_size_x=600, img_size_y=1200)
 print("torch_version", torch.__version__)
 print("cuda_available", torch.cuda.is_available())
@@ -278,9 +278,9 @@ for key in expected:
         raise SystemExit(f"{key} zmap shape {actual[key]} does not match configured domain crop H,W {expected[key]}")
 PY
 
-"$PY" -m neptune_v03.config.materialize \
-  --base "$NEPTUNE_DIR/configs/microtube_base.yaml" \
-  --override "$NEPTUNE_DIR/configs/overrides/standard_roi_gamma.yaml" \
+"$PY" -m unity_psf.config.materialize \
+  --base "$UNITY_DIR/configs/base/microtube.yaml" \
+  --override "$UNITY_DIR/configs/overrides/standard_roi_gamma.yaml" \
   --override "$OVERRIDE_CONFIG" \
   --output "$RESOLVED_CONFIG"
 
@@ -291,7 +291,7 @@ if grep -E "max_batches:|start_batch:|stop_batch:|update_interval_batches:" "$RE
   exit 2
 fi
 
-"$PY" -u -m neptune_v03.training.run_high_fidelity \
+"$PY" -u -m unity_psf.training.run_high_fidelity \
   --config "$RESOLVED_CONFIG" \
   --run-root "$RUN_ROOT" \
   --run-name "$RUN_NAME" \

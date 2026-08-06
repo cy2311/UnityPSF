@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import tifffile
+
+# This entrypoint imports the sibling workspace's z-map tools when run directly.
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+if str(WORKSPACE_ROOT) not in sys.path:
+    sys.path.insert(0, str(WORKSPACE_ROOT))
 
 from neptune_iwae.zmap_main.clean_reharvest import CleanReharvestConfig, run_clean_reharvest
 from neptune_iwae.zmap_main.export_nat_zmap import ExportNATZMapConfig, run_export_nat_zmap
@@ -101,7 +107,7 @@ def _estimate_channel_baseline(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run Neptune v0.3 high-quality initial zmap bootstrap.")
+    parser = argparse.ArgumentParser(description="Run Neptune v0.4 high-quality initial zmap bootstrap.")
     parser.add_argument("--side", choices=("left", "right"), required=True)
     parser.add_argument("--run-root", type=Path, required=True)
     parser.add_argument("--device", type=str, default="cuda:0")

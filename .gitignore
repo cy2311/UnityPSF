@@ -12,7 +12,6 @@ logs/
 output/
 datasets/
 artifacts/
-tests/
 *.out
 *.err
 slurm-*.out

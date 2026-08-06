@@ -1,0 +1,17 @@
+schema_version: unitypsf.joint_training.v1
+execution: round_robin
+epochs: 1
+
+instances:
+  - key: emitter_2d:main
+    config: project://configs/modalities/emitter_2d/emitter_2d_single_channel_smoke.yaml
+    seed: 101
+    step_budget: 1
+  - key: astigmatism:left
+    config: project://configs/modalities/astigmatism/astigmatism_single_channel_smoke.yaml
+    seed: 102
+    step_budget: 1
+  - key: astigmatism:right
+    config: project://configs/modalities/astigmatism/astigmatism_single_channel_smoke.yaml
+    seed: 103
+    step_budget: 1

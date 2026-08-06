@@ -1,0 +1,32 @@
+schema_version: unitypsf.joint_training.v1
+execution: expert_parallel
+rank_assignment: one_modality_per_rank
+epochs: 1
+
+instances:
+  - key: emitter_2d:left
+    config: project://configs/modalities/emitter_2d/emitter_2d_dual_channel_300epoch.yaml
+    model_seed: 4101
+    data_seed: 4111
+    step_budget: 8
+  - key: emitter_2d:right
+    config: project://configs/modalities/emitter_2d/emitter_2d_dual_channel_300epoch.yaml
+    model_seed: 4101
+    data_seed: 4112
+    step_budget: 8
+  - key: astigmatism:left
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4211
+    step_budget: 8
+  - key: astigmatism:right
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4212
+    step_budget: 8
+
+metadata:
+  training_scope: dual_modality_dual_channel_gpu_smoke
+  formal_contract_gate: true
+  scientific_status: engineering_smoke_only
+  blocks_300epoch_until_passed: true

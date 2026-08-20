@@ -1,6 +1,6 @@
 # UnityPSF 冻结实验基线
 
-以下实验资产用于验证项目整理前后的行为一致性。整理期间不得移动、重命名或删除这些目录。
+以下正式实验资产用于验证项目整理前后的行为一致性。整理期间不得移动、重命名或删除这些目录。
 
 ## 正式联合训练基线
 
@@ -12,11 +12,12 @@
 
 该运行已生成联合 checkpoint、训练汇总、最终指标、科研图和 HTML 报告。
 
-## 保留的对照资产
+## 仍保留的支持资产
 
-- `output/unitypsf/dual-modality-mixed-channel-300epoch-4544/`
-- `output/unitypsf/dual-modality-dual-channel-300epoch-4525/`
 - `output/unitypsf/calibration/`
 - `output/unitypsf/diagnostics/`
 
-在完成独立安装、训练、推理和 checkpoint 加载验收之前，不处理上述资产。
+2026-08-08 清理了不完整的 452x/453x/454x 训练和 smoke 运行；正式联合训练
+基线 `dual-modality-mixed-channel-300epoch-4545` 是唯一保留的 300 epoch 多模态
+双通道科学 run。早期工程验收 run `dual-modality-ep-4512/4513` 属于一次步进的
+synthetic smoke，已于 2026-08-08 清理；相关 job 号仅作为历史工程记录保留。

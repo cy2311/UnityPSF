@@ -87,12 +87,14 @@ class PSFMoE(nn.Module):
             sample_weights = routing.weights.index_select(0, sample_indices)[:, expert_index]
             for name in aggregate:
                 value = getattr(output, name)
-                weighted = value * sample_weights.view(-1, *([1] * (value.ndim - 1)))
+                weights = sample_weights.to(dtype=value.dtype)
+                weighted = value * weights.view(-1, *([1] * (value.ndim - 1)))
                 full_shape = (batch_size, *value.shape[1:])
                 full = value.new_zeros(full_shape).index_copy(0, sample_indices, weighted)
                 aggregate[name] = full if aggregate[name] is None else aggregate[name] + full
             for name, value in output.auxiliary.items():
-                weighted = value * sample_weights.view(-1, *([1] * (value.ndim - 1)))
+                weights = sample_weights.to(dtype=value.dtype)
+                weighted = value * weights.view(-1, *([1] * (value.ndim - 1)))
                 full_shape = (batch_size, *value.shape[1:])
                 full = value.new_zeros(full_shape).index_copy(0, sample_indices, weighted)
                 auxiliary[name] = full if name not in auxiliary else auxiliary[name] + full

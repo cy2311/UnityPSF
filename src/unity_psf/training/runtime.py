@@ -241,9 +241,20 @@ def _builtin_batch_provider_registry() -> dict[str, BatchProviderFactory]:
 
         return build_microtube_tiff_batch_provider(MicrotubeTiffBatchProviderConfig(**params))
 
+    def dh_raw_tiff_train_batch(params: dict[str, object]) -> BatchProvider:
+        from unity_psf.localization.dh_raw_tiff import DHRawTiffBatchProviderConfig, build_dh_raw_tiff_batch_provider
+        return build_dh_raw_tiff_batch_provider(DHRawTiffBatchProviderConfig(**params))
+
+    def dh_online_direct_xyz_batch(params: dict[str, object]) -> BatchProvider:
+        from unity_psf.localization.dh_raw_tiff import build_dh_online_direct_xyz_batch_provider
+
+        return build_dh_online_direct_xyz_batch_provider(params)
+
     return {
         "deterministic_synthetic_online": deterministic_synthetic_online,
         "microtube_tiff_train_batch": microtube_tiff_train_batch,
+        "dh_raw_tiff_train_batch": dh_raw_tiff_train_batch,
+        "dh_online_direct_xyz_batch": dh_online_direct_xyz_batch,
         "online_train_batch": online_train_batch,
     }
 
@@ -281,10 +292,15 @@ def _builtin_loss_registry() -> dict[str, LossFactory]:
 
         return make_localization_loss(_MSECriterion())
 
+    def dh_direct_xyz_loss(params: dict[str, object]) -> LossFn:
+        from unity_psf.localization.dh_raw_tiff import DHDirectXYZLossAdapter
+        return DHDirectXYZLossAdapter(params)
+
     return {
         "active_smlm_gmm_loss": active_smlm_gmm_loss,
         "active_smlm_loss": active_smlm_loss,
         "localization_mse": localization_mse,
+        "dh_direct_xyz_loss": dh_direct_xyz_loss,
     }
 
 

@@ -58,6 +58,25 @@ def test_formal_joint_config_declares_three_instances_and_two_rank_assignment() 
     assert len({item["data_seed"] for item in config["instances"]}) == 3
 
 
+def test_three_modality_dh_contract_matches_astigmatism_epoch_exposure() -> None:
+    joint = _load("unitypsf_three_modality_raw_tiff_300epoch.yaml")
+    dh = _load("double_helix_raw_tiff_300epoch.yaml")["train"]
+    astigmatism = _load("astigmatism_dual_channel_300epoch.yaml")["train"]
+
+    dh_instance = next(item for item in joint["instances"] if item["key"] == "double_helix:main")
+    assert dh_instance["step_budget"] == 417
+    assert dh["batch_size"] == 24
+    online = dh["online_generation"]
+    assert online["steps_per_epoch"] == 417
+    assert dh["batch_size"] * online["steps_per_epoch"] == 10_008
+    assert astigmatism["batch_size"] * astigmatism["online_generation"]["steps_per_epoch"] == 10_008
+    assert dh["online_generation"]["simulation_backend"] == "lut"
+    assert dh["online_generation"]["psf_type"] == "vector"
+    assert dh["online_generation"]["vector_psf_size"] == 21
+    assert "bead_01_complex_pupil.npz" in dh["online_generation"]["pupil_carrier_complex_npz"]
+    assert "target_npz_path" not in dh["online_generation"]
+
+
 def test_gpu_gate_reuses_formal_instance_contracts_with_amp_warmup_steps() -> None:
     config = _load("unitypsf_dual_modality_mixed_channel_gpu_smoke.yaml")
 

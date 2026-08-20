@@ -760,9 +760,9 @@ warning 来自当前环境的 CUDA 探测和已有 `vector_psf.py` tensor 构造
 - 任务 13：可视化报告工程完成；真实 Astig 等价性和物理状态图仍待验收。
 - 任务 14：完整 Emitter2D 与 Origami manifest/split contract 完成；真实 quicklook 和训练待执行。
 - 任务 15：等待 Double Helix 真实样本和 calibration 数据。
-- 任务 16A-C：工程完成。SLURM job `4513` 在 3 张 RTX 3090 上完成 Expert Parallel
-  synthetic smoke，发布的 joint checkpoint SHA-256 为
-  `4e8a370dd8b15ea69836c2d0500588799304802f6d1a4054951b64e49209928b`。
+- 任务 16A-C：工程完成。SLURM job `4513` 曾在 3 张 RTX 3090 上完成 Expert Parallel
+  synthetic smoke；该一次步进 smoke 产物已清理。当前正式联合 checkpoint 见
+  `dual-modality-mixed-channel-300epoch-4545`。
 - 任务 16D 和任务 17：未开始，不阻塞当前双模态工程里程碑。
 
 job `4513` 只证明三路训练、barrier、单文件提交、回载路由和报告生成正确，不证明

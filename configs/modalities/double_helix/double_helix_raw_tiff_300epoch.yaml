@@ -1,0 +1,85 @@
+schema_version: "unitypsf.instance_training.v1"
+
+metadata:
+  formal_training_contract: unitypsf.formal.v1
+
+train:
+  device: cuda
+  epochs: 300
+  batch_size: 24
+  channel_layout:
+    frame_size: [96, 96]
+    channels:
+      - id: main
+        crop: [0, 0, 96, 96]
+  expert:
+    name: double_helix
+    expert_type: double_helix
+  model:
+    name: double_helix_expert
+    params:
+      in_channels: 3
+      feature_channels: 32
+  loss:
+    name: dh_direct_xyz_loss
+    params:
+      auxiliary_weight: 0.25
+  optimizer:
+    name: adamw
+    params:
+      lr: 0.0006
+      weight_decay: 0.1
+  online_generation:
+    steps_per_epoch: 417
+    batch_strategy: cached_window
+    simulation_backend: lut
+    simulation_output_device: renderer
+    psf_type: vector
+    height: 96
+    width: 96
+    channels: 3
+    emitter_density_um2: 0.2
+    background_range: [110.0, 110.0]
+    photon_mean_sigma: [20000.0, 1000.0]
+    photon_range: [0.0, 31000.0]
+    photon_scale: 31000.0
+    z_range: [-1.5, 1.5]
+    z_scale: 1.5
+    pxyz_target_order: v03
+    pixel_size_nm_x: 207.0
+    pixel_size_nm_y: 207.0
+    wavelength_nm: 660.0
+    NA: 1.27
+    refmed: 1.33
+    refcov: 1.33
+    refimm: 1.33
+    npupil: 128
+    vector_psf_size: 21
+    vector_batch_size: 1024
+    zemit0: 0.0
+    lut_simulation:
+      field_stride: 16
+      z_steps: 101
+      subpixel_bins: 1
+      field_mode: global_field
+      storage_dtype: fp16
+    field_origin_sampling_mode: sliding_window
+    field_origin_stride_px: 88
+    conditioning_mode: channels
+    condition_feature_dim: 0
+    condition_dim: 0
+    domain_count: 1
+    append_domain_onehot: false
+    dual_domain_coeff_maps:
+      - name: double_helix
+        coeff_maps_npz: /home/guest/Others/main/race/unity/output/unitypsf/dh_physical_update_100_gain0p03_psf21_bead01/physical_update/run/artifacts/roi_bank_gamma/latest/feedback/double_helix/coeff_maps.npz
+    pupil_carrier_complex_npz: /home/guest/Others/main/race/output/double_helix/calibration/tcell_dh_bead_phase_refresh_20260817/independent_pixel_pupils/arrays/bead_01_complex_pupil.npz
+    grad_clip_norm: 0.03
+    amp_enabled: true
+    amp_dtype: float16
+
+smlm_overrides:
+  lr_scheduler: StepLR
+  lr_step_size: 10
+  lr_gamma: 0.9
+  lr_step_unit: epoch

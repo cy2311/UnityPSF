@@ -261,11 +261,19 @@ def _normalize_tile_input(
 class _FDDeeplocTileNormalizer:
     train_background_adu: float = 495.58422534346505
     background_percentile: float = 50.0
+    signal_gain: float = 1.0
+    gain_scope: str = "global_run"
+
+    def __post_init__(self) -> None:
+        if str(self.gain_scope) != "global_run":
+            raise ValueError("FD-DeepLoc signal gain must have gain_scope='global_run'")
+        if float(self.signal_gain) <= 0.0:
+            raise ValueError("FD-DeepLoc signal_gain must be positive")
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         arr = frames.detach().cpu().numpy()
         bg = self.estimate_background_numpy(arr)
-        return frames.to(dtype=torch.float32) - float(bg) + float(self.train_background_adu)
+        return float(self.train_background_adu) + (frames.to(dtype=torch.float32) - float(bg)) * float(self.signal_gain)
 
     def estimate_background_numpy(self, images: np.ndarray) -> float:
         arr = np.asarray(images, dtype=np.float32)
@@ -289,9 +297,11 @@ class _FDDeeplocTileNormalizer:
     def to_dict(self) -> dict[str, float | str | None]:
         return {
             "mode": "fd_deeploc_style",
-            "model_input": "recentered_raw_adu",
+            "model_input": "recentered_raw_adu" if float(self.signal_gain) == 1.0 else "recentered_anchored_gain_raw_adu",
             "train_background_adu": float(self.train_background_adu),
             "background_percentile": float(self.background_percentile),
+            "signal_gain": float(self.signal_gain),
+            "gain_scope": str(self.gain_scope),
             "legacy_input_offset": None,
             "legacy_input_scale": None,
         }
@@ -308,6 +318,8 @@ def _build_inference_frame_proc(config: Mapping[str, Any] | None) -> _FDDeeplocT
     return _FDDeeplocTileNormalizer(
         train_background_adu=float(train_background_adu),
         background_percentile=float(norm_cfg.get("background_percentile", 50.0)),
+        signal_gain=float(norm_cfg.get("signal_gain", 1.0)),
+        gain_scope=str(norm_cfg.get("gain_scope", "global_run")),
     )
 
 

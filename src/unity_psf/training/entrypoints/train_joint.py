@@ -69,10 +69,11 @@ def _instance_specs(config: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
         key = JointExpertKey.parse(str(spec["key"])).storage_key
         if key in specs:
             raise ValueError(f"duplicate joint instance key {key!r}")
-        if JointExpertKey.parse(key).modality.value not in {"emitter_2d", "astigmatism"}:
+        if JointExpertKey.parse(key).modality.value not in {"emitter_2d", "astigmatism", "double_helix"}:
             raise ValueError(f"unsupported trainable modality in joint config: {key!r}")
         specs[key] = spec
-    if {JointExpertKey.parse(key).modality.value for key in specs} != {"emitter_2d", "astigmatism"}:
+    modalities = {JointExpertKey.parse(key).modality.value for key in specs}
+    if not {"emitter_2d", "astigmatism"}.issubset(modalities):
         raise ValueError("joint config must include emitter_2d and astigmatism instances")
     return specs
 

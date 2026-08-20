@@ -5,4 +5,3 @@ from .filter import (
 )
 
 __all__ = ["FilterConfig", "compute_locprec_xy_nm", "filter_rows"]
-

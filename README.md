@@ -76,23 +76,30 @@ result = model.localize(
 ```
 
 The single-process reference trainer and three-rank Expert Parallel trainer
-use the same model and checkpoint contract:
+use the same model and checkpoint contract. The default formal scheme is the
+three-expert route: emitter 2D, astigmatism, and double helix. Each modality
+owns one GPU; DH first performs a raw-TIFF physical update, then trains with
+the direct-XYZ LUT contract, cached-window generation, vector batch size 1024,
+and FP16 AMP.
 
 ```bash
 unity-psf-train-joint \
   --config configs/experiments/unitypsf_dual_modality_multichannel_smoke.yaml
 
-sbatch scripts/train/unitypsf_dual_modality_expert_parallel.sbatch
+sbatch scripts/train/unitypsf_default_3expert.sbatch
 
 unity-psf-checkpoint verify /path/to/unitypsf_joint.ckpt
 unity-psf-checkpoint inspect /path/to/unitypsf_joint.ckpt
 ```
 
-The currently supported modalities are `emitter_2d` and `astigmatism`.
-Double Helix is deliberately absent from the release checkpoint until real DH
-training and calibration data pass scientific validation. The image-only raw
-TIFF modality detector is also future work; current formal routing is explicit
-and deterministic.
+The default formal training modalities are `emitter_2d`, `astigmatism`, and
+`double_helix`. Routing remains explicit and deterministic. The DH route uses
+the raw-TIFF physical-update coefficient map generated at job start; it does
+not infer a modality from image content.
+
+For a smoke test or a legacy two-modality experiment, use the explicitly named
+configs and scripts under `configs/experiments/` and `scripts/train/` rather
+than the default entrypoint.
 
 Runtime artifacts are intentionally local-only:
 

@@ -19,14 +19,21 @@
 | 16D | 未开始 | checkpoint schema 已可扩展 | DH 加入三模态训练 |
 | 17 | 未开始 | 显式确定性路由可用 | raw TIFF detector、置信度校准和拒识 |
 
-工程验收凭据：SLURM job `4513` 在 3 张 RTX 3090 上分别运行
+历史工程验收凭据：SLURM job `4513` 在 3 张 RTX 3090 上分别运行
 `Emitter2D(main)`、`Astigmatism(left)` 和 `Astigmatism(right)`。三个 rank 均完成独立
-forward/backward/optimizer step，rank 0 原子发布并重新加载：
+forward/backward/optimizer step，rank 0 原子发布并重新加载。该一次步进 synthetic
+smoke 目录已于 2026-08-08 清理；历史 checkpoint 不再作为可加载资产：
 
 ```text
-output/unitypsf/dual-modality-ep-4513/checkpoints/unitypsf_joint.ckpt
-SHA-256: 4e8a370dd8b15ea69836c2d0500588799304802f6d1a4054951b64e49209928b
-report: output/unitypsf/dual-modality-ep-4513/report/report.html
+job: 4513
+status: trained-smoke, step_count=1
+```
+
+当前保留的正式联合 checkpoint：
+
+```text
+output/unitypsf/dual-modality-mixed-channel-300epoch-4545/checkpoints/unitypsf_joint.ckpt
+SHA-256: 9d11461df9b7330724db252b6ac54708ae0fde67fd0a2eeb755664c92b61ccf2
 ```
 
 该作业使用 8x8 合成 smoke 输入，只冻结工程行为，不冻结科学性能。不得把它命名为

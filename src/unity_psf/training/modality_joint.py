@@ -207,15 +207,18 @@ def train_modality_epoch(*, runtime: ModalityTrainingRuntime, epoch: int) -> Mod
                 f"scheduled channel {channel_id!r} received batch for {batch.channel_id!r}"
             )
         runtime.optimizer.zero_grad(set_to_none=True)
+        model_device = next(runtime.model.parameters()).device
+        images = batch.images.to(device=model_device, non_blocking=True)
+        conditions = None if batch.conditions is None else batch.conditions.to(device=model_device, non_blocking=True)
         with torch.autocast(
             device_type="cuda",
             dtype=runtime.amp_dtype,
             enabled=autocast_enabled,
         ):
             output = (
-                runtime.model(batch.images, batch.conditions)
-                if batch.conditions is not None
-                else runtime.model(batch.images)
+                runtime.model(images, conditions)
+                if conditions is not None
+                else runtime.model(images)
             )
             loss = stream.loss_fn(output, batch)
         if not isinstance(loss, torch.Tensor) or loss.numel() != 1:

@@ -87,6 +87,14 @@ def _modality_batches(provider, channel_id: str):
     def batches(epoch: int):
         for training_batch in provider(epoch):
             local_batch = training_batch.inputs
+            if hasattr(training_batch, "targets") and not isinstance(local_batch, LocalizationTrainBatch):
+                yield ModalityTrainingBatch(
+                    images=local_batch,
+                    conditions=None,
+                    target=training_batch,
+                    channel_id=channel_id,
+                )
+                continue
             if not isinstance(local_batch, LocalizationTrainBatch):
                 raise TypeError("modality joint training requires LocalizationTrainBatch")
             model_input = local_batch.model_input
@@ -129,6 +137,30 @@ def _channel_metadata(
     provider_params = provider.get("params", {}) if isinstance(provider, Mapping) else {}
     sampling = _sampling_recenter_metadata(provider_params)
     provenance.update(sampling)
+    if provider.get("name") == "dh_raw_tiff_train_batch" and isinstance(provider_params, Mapping):
+        state_path_value = provider_params.get("physical_state_path")
+        metadata_path_value = provider_params.get("simulation_metadata_path")
+        if state_path_value is not None and metadata_path_value is not None:
+            physical_state_path = Path(str(state_path_value)).resolve()
+            simulation_metadata_path = Path(str(metadata_path_value)).resolve()
+            physical_state = json.loads(physical_state_path.read_text(encoding="utf-8"))
+            simulation_metadata = json.loads(simulation_metadata_path.read_text(encoding="utf-8"))
+            coefficient_map = Path(str(simulation_metadata["coefficient_map"])).resolve()
+            calibration.update(
+                {
+                    "psf_type": "vector",
+                    "simulation_backend": str(simulation_metadata["simulation_backend"]),
+                    "coefficient_map": str(coefficient_map),
+                    "coefficient_map_sha256": sha256_file(coefficient_map),
+                }
+            )
+            provenance.update(
+                {
+                    "dh_physical_state_path": str(physical_state_path),
+                    "dh_simulation_metadata_path": str(simulation_metadata_path),
+                    "dh_training_source": str(simulation_metadata["source"]),
+                }
+            )
     calibration.update(
         {
             name: sampling[name]
@@ -237,8 +269,8 @@ def _audit_formal_runtime_contracts(
 ) -> dict[str, dict[str, Any]]:
     parsed_modality = PSFModality.parse(modality)
     required_channels = (
-        {"left"}
-        if parsed_modality is PSFModality.EMITTER_2D
+        {"main"}
+        if parsed_modality is PSFModality.DOUBLE_HELIX
         else {"left", "right"}
     )
     if require_complete and set(runtime_configs) != required_channels:
@@ -250,6 +282,19 @@ def _audit_formal_runtime_contracts(
     physical_hashes: dict[str, str] = {}
     evidence: dict[str, dict[str, Any]] = {}
     for channel_id, runtime_config in runtime_configs.items():
+        if parsed_modality is PSFModality.DOUBLE_HELIX:
+            provider = runtime_config.get("batch_provider", {})
+            provider_params = provider.get("params", {}) if isinstance(provider, Mapping) else {}
+            if provider.get("name") != "dh_online_direct_xyz_batch":
+                raise ValueError("formal double_helix training requires online physical-update vector/LUT supervision")
+            if provider_params.get("simulation_backend") != "lut" or provider_params.get("psf_type") != "vector":
+                raise ValueError("formal double_helix training requires vector/LUT simulation")
+            if int(provider_params.get("vector_psf_size", -1)) != 21:
+                raise ValueError("formal double_helix training requires vector_psf_size=21")
+            if provider_params.get("pupil_carrier_complex") is None:
+                raise ValueError("formal double_helix training requires the calibrated pupil carrier")
+            evidence[channel_id] = {"provider": str(provider["name"]), "target_source": "physical_update_vector_lut_direct_xyz", "simulation_backend": "lut", "psf_type": "vector", "loss": "dh_direct_xyz_loss"}
+            continue
         optimizer = runtime_config.get("optimizer", {})
         if str(optimizer.get("name", "")).lower() != "adamw":
             raise ValueError(f"formal {parsed_modality.value}:{channel_id} training requires AdamW")
@@ -544,7 +589,7 @@ def _build_modality_runtime(
             raise ValueError(
                 f"formal {modality.value} runtime built {type(shared_runtime.optimizer).__name__}, not AdamW"
             )
-        if shared_runtime.scheduler is None or type(shared_runtime.scheduler).__name__ != "StepLR":
+        if modality is not PSFModality.DOUBLE_HELIX and (shared_runtime.scheduler is None or type(shared_runtime.scheduler).__name__ != "StepLR"):
             scheduler_name = (
                 None if shared_runtime.scheduler is None else type(shared_runtime.scheduler).__name__
             )

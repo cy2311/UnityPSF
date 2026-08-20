@@ -32,6 +32,7 @@ from unity_psf.localization.smlm_output import (
 
 from .psf_moe.experts.astigmatism import AstigmatismExpert
 from .psf_moe.experts.emitter_2d import Emitter2DExpert
+from unity_psf.localization.dh_raw_tiff import DoubleHelixRuntimeModel
 from .psf_moe.router import InstanceRouter, ModalityRouter
 
 
@@ -220,6 +221,10 @@ class UnityPSF(nn.Module):
             return Emitter2DExpert(**dict(model_config))
         if parsed is PSFModality.ASTIGMATISM:
             return AstigmatismExpert(**dict(model_config))
+        if parsed is PSFModality.DOUBLE_HELIX:
+            return DoubleHelixRuntimeModel(
+                feature_channels=int(model_config.get("feature_channels", 32)),
+            )
         raise ValueError(f"unsupported trained expert modality {parsed.value!r}")
 
     def _selected_expert(self, storage_key: str) -> nn.Module:
@@ -293,8 +298,20 @@ class UnityPSF(nn.Module):
                 output = expert(selected_images, conditions.to(self.target_device))
             else:
                 output = expert(selected_images)
+        elif parsed_modality is PSFModality.DOUBLE_HELIX:
+            if conditions is not None:
+                raise ValueError("double_helix expert does not accept FiLM conditions")
+            output = expert(selected_images)
         else:
             raise ValueError(f"unsupported trained expert modality {parsed_modality.value!r}")
+        if parsed_modality is PSFModality.DOUBLE_HELIX and hasattr(output, "detection_logits"):
+            raw = selected_images.new_zeros((selected_images.shape[0], SMLMOutputChannels.count, *selected_images.shape[-2:]))
+            raw[:, SMLMOutputChannels.p] = output.detection_logits
+            raw[:, SMLMOutputChannels.photons_mu] = output.photons
+            raw[:, SMLMOutputChannels.x_mu] = output.xy_offset[:, 0]
+            raw[:, SMLMOutputChannels.y_mu] = output.xy_offset[:, 1]
+            raw[:, SMLMOutputChannels.z_mu] = output.z
+            output = raw
         if not isinstance(output, torch.Tensor) or output.ndim != 4:
             raise RuntimeError("expert must return a dense (N,10,H,W) tensor")
         if output.shape[1] != SMLMOutputChannels.count:

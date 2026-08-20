@@ -58,6 +58,14 @@ def build_localization_runtime_config(
     microtube_cfg = train_cfg.get("microtube_tiff")
     if isinstance(microtube_cfg, Mapping) and microtube_cfg.get("enabled") is True:
         batch_provider = _microtube_tiff_provider_config(train_cfg, microtube_cfg, seed=seed)
+    elif _expert_type(train_cfg) == "double_helix":
+        online_cfg = _mapping(train_cfg.get("online_generation"), "train.online_generation")
+        batch_provider = _online_provider_config(config, train_cfg, online_cfg, config_base_dir=config_base_dir, seed=seed, single_channel=True, model_params=resolved_model_params)
+        batch_provider["name"] = "dh_online_direct_xyz_batch"
+    elif isinstance(train_cfg.get("dh_raw_tiff"), Mapping) and train_cfg["dh_raw_tiff"].get("enabled") is True:
+        dh_cfg = train_cfg["dh_raw_tiff"]
+        batch_provider = {"name": "dh_raw_tiff_train_batch", "params": {**dict(dh_cfg), "enabled": None}}
+        batch_provider["params"].pop("enabled", None)
     else:
         online_cfg = _mapping(train_cfg.get("online_generation"), "train.online_generation")
         if online_cfg.get("enabled", True) is not True:
@@ -119,6 +127,10 @@ def resolve_localization_model_config(config: Mapping[str, Any]) -> tuple[str, d
     microtube_cfg = train_cfg.get("microtube_tiff")
     if isinstance(microtube_cfg, Mapping) and microtube_cfg.get("enabled") is True:
         return "production_localizer", {"in_channels": int(microtube_cfg.get("channels", 3))}
+    dh_cfg = train_cfg.get("dh_raw_tiff")
+    if _expert_type(train_cfg) == "double_helix":
+        feature_channels = int((_mapping(train_cfg.get("model"), "train.model").get("params", {}) or {}).get("feature_channels", 32))
+        return "double_helix_expert", {"in_channels": 3, "feature_channels": feature_channels}
 
     online_cfg = train_cfg.get("online_generation")
     if not isinstance(online_cfg, Mapping):
@@ -300,6 +312,10 @@ def _has_explicit_astigmatism_condition_contract(train_cfg: Mapping[str, Any]) -
 
 
 def _loss_config(root_cfg: Mapping[str, Any], train_cfg: Mapping[str, Any], *, model_name: str) -> dict[str, Any]:
+    if model_name == "double_helix_expert":
+        loss_cfg = train_cfg.get("loss")
+        params = dict(loss_cfg.get("params", {})) if isinstance(loss_cfg, Mapping) else {}
+        return {"name": "dh_direct_xyz_loss", "params": params}
     loss_cfg = train_cfg.get("loss")
     if isinstance(loss_cfg, Mapping) and "name" in loss_cfg:
         name = str(loss_cfg["name"])
@@ -531,6 +547,9 @@ def _runtime_modality_contract(
     expert_cfg = train_cfg.get("expert")
     if not isinstance(expert_cfg, Mapping):
         return {}
+    if str(model_name) == "double_helix_expert":
+        layout = ChannelLayout.from_value(train_cfg.get("channel_layout", {"channels": ["main"]}))
+        return {"input_frame_spec": {"input_frame_channels": 3, "frame_order": "temporal"}, "channel_layout": {"channels": [{"channel_id": c.channel_id, "crop": None if c.crop is None else list(c.crop), "anchor_profile": c.anchor_profile, "calibration_ref": c.calibration_ref} for c in layout.channels], "frame_size": list(layout.frame_size) if layout.frame_size is not None else [96, 96]}, "expert_instance": {"expert_type": "double_helix", "instance_id": "main", "channel_id": "main", "prototype_ref": None}}
     online_cfg = _mapping(train_cfg.get("online_generation"), "train.online_generation")
     frame_spec = _input_frame_spec(train_cfg, online_cfg)
     raw_layout = train_cfg.get("channel_layout", {"channels": ["main"]})

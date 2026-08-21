@@ -5,10 +5,15 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=2-00:00:00
-#SBATCH --output=/home/guest/Others/main/race/unity/logs/slurm/unitypsf_3mod_300-%j.out
-#SBATCH --error=/home/guest/Others/main/race/unity/logs/slurm/unitypsf_3mod_300-%j.err
+#SBATCH --output=/home/guest/Others/main/race/unity_v0.2/logs/slurm/unitypsf_3mod_300-%j.out
+#SBATCH --error=/home/guest/Others/main/race/unity_v0.2/logs/slurm/unitypsf_3mod_300-%j.err
 set -euo pipefail
-PROJECT_ROOT=/home/guest/Others/main/race/unity
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+  PROJECT_ROOT="$SLURM_SUBMIT_DIR"
+else
+  SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  PROJECT_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+fi
 PYTHON_BIN=${PYTHON:-/home/guest/anaconda3/bin/python}
 TORCHRUN_BIN=${TORCHRUN:-/home/guest/anaconda3/bin/torchrun}
 CONFIG=${UNITYPSF_JOINT_CONFIG:-$PROJECT_ROOT/configs/experiments/unitypsf_three_modality_raw_tiff_300epoch.yaml}
@@ -27,22 +32,21 @@ import sys
 from pathlib import Path
 import torch
 from unity_psf.config import load_config
-from unity_psf.localization.dh_raw_tiff import DHRawTiffBatchProviderConfig, build_dh_raw_tiff_batch_provider, DHDirectXYZLossAdapter
 from unity_psf.localization.model import build_localization_model_registry
-from unity_psf.localization.runtime_config import build_localization_runtime_config
+from unity_psf.localization.runtime import build_localization_runtime_config
+from unity_psf.training.runtime import build_runtime_batch_provider, build_runtime_loss
 
 if not torch.cuda.is_available() or torch.cuda.device_count() < 3:
     raise RuntimeError(f"formal preflight requires 3 CUDA devices, got {torch.cuda.device_count()}")
-path = Path('/home/guest/Others/main/race/unity/configs/modalities/double_helix/double_helix_raw_tiff_300epoch.yaml')
+path = Path(sys.argv[1]).resolve().parents[1] / 'modalities/double_helix/double_helix_raw_tiff_300epoch.yaml'
 cfg = load_config(path)
 runtime_cfg = build_localization_runtime_config(cfg, config_base_dir=path.parent, seed=4311)
-params = dict(runtime_cfg['batch_provider']['params'])
-params.update(batch_size=1, steps_per_epoch=1)
-provider = build_dh_raw_tiff_batch_provider(DHRawTiffBatchProviderConfig(**params))
-batch = next(iter(provider(1)))
+provider_cfg = dict(runtime_cfg['batch_provider'])
+provider_cfg['params'] = {**dict(provider_cfg['params']), 'batch_size': 1, 'steps_per_epoch': 1}
+batch = next(iter(build_runtime_batch_provider({**runtime_cfg, 'batch_provider': provider_cfg})(1)))
 model = build_localization_model_registry()['double_helix_expert'](runtime_cfg['model']['params']).cuda(0)
 out = model(batch.inputs.cuda(0))
-loss = DHDirectXYZLossAdapter(runtime_cfg['loss']['params']).from_output(out, batch)
+loss = build_runtime_loss(runtime_cfg).from_output(out, batch)
 assert torch.isfinite(loss).item()
 print({'preflight': 'passed', 'frames': tuple(batch.inputs.shape), 'loss': float(loss), 'gpu_count': torch.cuda.device_count()}, flush=True)
 PY

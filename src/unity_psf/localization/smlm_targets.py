@@ -17,6 +17,42 @@ class SMLMTargetConvention:
     z_activation: str = "tanh"
 
 
+def normalize_pxyz_target_order(value: str) -> str:
+    key = str(value or "legacy_iwae").strip().lower()
+    if key in {"legacy_iwae", "iwae", "old", "phot_xyz", "phot,x,y,z", "photons_x_y_z"}:
+        return "legacy_iwae"
+    if key in {"v03", "xyzph", "x,y,z,phot", "x_y_z_photons"}:
+        return "v03"
+    raise ValueError(f"unsupported pxyz target_order: {value!r}")
+
+
+def pxyz_target_order_tuple(value: str) -> tuple[str, ...]:
+    if normalize_pxyz_target_order(value) == "legacy_iwae":
+        return LEGACY_IWAE_PXYZ_TARGET_ORDER
+    return V03_PXYZ_TARGET_ORDER
+
+
+def v03_pxyz_to_legacy_iwae(
+    pxyz_targets: torch.Tensor,
+    *,
+    photon_scale: float | None = None,
+    z_scale: float | None = None,
+) -> torch.Tensor:
+    if pxyz_targets.shape[-1] != 4:
+        raise ValueError(f"v03 pxyz targets must have last dimension 4, got {tuple(pxyz_targets.shape)}")
+    if photon_scale is not None and float(photon_scale) <= 0.0:
+        raise ValueError("photon_scale must be positive or None")
+    if z_scale is not None and float(z_scale) <= 0.0:
+        raise ValueError("z_scale must be positive or None")
+    photons = pxyz_targets[..., 3]
+    z = pxyz_targets[..., 2]
+    if photon_scale is not None:
+        photons = photons / float(photon_scale)
+    if z_scale is not None:
+        z = z / float(z_scale)
+    return torch.stack((photons, pxyz_targets[..., 0], pxyz_targets[..., 1], z), dim=-1)
+
+
 def target_pixel_indices(pxyz_targets: torch.Tensor, *, height: int, width: int) -> tuple[torch.Tensor, torch.Tensor]:
     if pxyz_targets.ndim != 2 or int(pxyz_targets.shape[1]) != 4:
         raise ValueError(f"pxyz_targets must have shape (M,4), got {tuple(pxyz_targets.shape)}")
@@ -103,5 +139,8 @@ __all__ = [
     "absolute_pxyz_to_local_targets",
     "legacy_iwae_target_process_to_v03",
     "legacy_iwae_pxyz_to_v03",
+    "normalize_pxyz_target_order",
+    "pxyz_target_order_tuple",
     "target_pixel_indices",
+    "v03_pxyz_to_legacy_iwae",
 ]

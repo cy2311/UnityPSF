@@ -1,16 +1,14 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 from pathlib import Path
-from typing import Any, Mapping
 
 from unity_psf.config import load_config
-from unity_psf.contracts import ChannelLayout, logical_sha256, sha256_file
 from unity_psf.localization import build_localization_model_registry, build_localization_runtime_config
 from unity_psf.runtime import ensure_run_layout, write_run_manifest, write_stage_status
-from unity_psf.training import build_trainer_runtime, initialize_model_from_checkpoint, train_epochs
+from unity_psf.training import build_trainer_runtime, train_epochs
 from unity_psf.training.localizer_eval import build_localizer_eval_provider, localizer_eval_route
+from unity_psf.training.runtime import prepare_instance_runtime
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,7 +38,7 @@ def main() -> int:
             layout=layout,
             model_registry=build_localization_model_registry(),
         )
-        runtime, initialization = _prepare_instance_runtime(
+        runtime, initialization = prepare_instance_runtime(
             runtime,
             runtime_config,
             config_base_dir=config_base_dir,
@@ -88,47 +86,6 @@ def main() -> int:
         write_stage_status(layout, "localization_training", "failed", {"error": str(exc)})
         raise
     return 0
-
-
-def _prepare_instance_runtime(runtime, runtime_config: Mapping[str, Any], *, config_base_dir: Path):
-    instance = runtime_config.get("expert_instance")
-    if not isinstance(instance, Mapping):
-        return runtime, None
-    checkpoint_metadata = getattr(runtime.model, "checkpoint_metadata", None)
-    if not callable(checkpoint_metadata):
-        raise TypeError("an expert instance model must expose checkpoint_metadata()")
-
-    prototype_ref = instance.get("prototype_ref")
-    initialization: dict[str, Any]
-    if prototype_ref is None:
-        parent_hash = logical_sha256(runtime.model.state_dict())
-        initialization = {"source": "random_initialization", "sha256": parent_hash}
-    else:
-        prototype_path = Path(str(prototype_ref))
-        if not prototype_path.is_absolute():
-            prototype_path = (config_base_dir / prototype_path).resolve()
-        initialize_model_from_checkpoint(
-            prototype_path,
-            model=runtime.model,
-            expected_expert_type=str(instance["expert_type"]),
-        )
-        parent_hash = sha256_file(prototype_path)
-        initialization = {
-            "source": "prototype_checkpoint",
-            "path": str(prototype_path),
-            "sha256": parent_hash,
-        }
-
-    channel_layout = ChannelLayout.from_value(runtime_config["channel_layout"])
-    channel_id = str(instance["channel_id"])
-    channel_spec = next(channel for channel in channel_layout.channels if channel.channel_id == channel_id)
-    metadata = checkpoint_metadata(
-        checkpoint_role="instance",
-        instance_id=str(instance["instance_id"]),
-        channel_spec=channel_spec,
-        parent_checkpoint_hash=parent_hash,
-    )
-    return replace(runtime, config=replace(runtime.config, checkpoint_metadata=metadata)), initialization
 
 
 if __name__ == "__main__":

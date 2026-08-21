@@ -6,7 +6,7 @@ import torch
 import yaml
 
 from unity_psf.localization.model import build_localization_model_registry
-from unity_psf.localization.runtime_config import resolve_localization_model_config
+from unity_psf.localization.runtime import build_localization_runtime_config
 from unity_psf.localization.smlm_output import SMLMOutputChannels, decode_smlm_output
 from unity_psf.runtime.layout import ensure_run_layout
 from unity_psf.training.loop import TrainingBatch, TrainingConfig, load_training_checkpoint, train_one_epoch
@@ -48,11 +48,15 @@ def test_baseline_config_resolves_to_current_soft_moe_route() -> None:
             }
         }
     }
-    model_name, model_params = resolve_localization_model_config(config)
-    assert model_name == model_spec["name"]
-    assert model_params["nch_in"] == 3
-    assert model_params["condition_dim"] == 4
-    assert model_params["domain_count"] == 2
+    runtime_config = build_localization_runtime_config(config)
+    resolved_model = runtime_config["model"]
+    assert isinstance(resolved_model, dict)
+    assert resolved_model["name"] == model_spec["name"]
+    resolved_params = resolved_model["params"]
+    assert isinstance(resolved_params, dict)
+    assert resolved_params["nch_in"] == 3
+    assert resolved_params["condition_dim"] == 4
+    assert resolved_params["domain_count"] == 2
 
 
 def test_current_soft_moe_supports_single_and_dual_domain_10ch_output() -> None:

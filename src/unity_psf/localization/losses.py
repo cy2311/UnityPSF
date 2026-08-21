@@ -8,7 +8,9 @@ from unity_psf.localization.smlm_output import SMLMOutputChannels, decode_smlm_o
 from unity_psf.localization.smlm_targets import (
     SMLMTargetConvention,
     absolute_pxyz_to_local_targets,
+    normalize_pxyz_target_order,
     target_pixel_indices,
+    v03_pxyz_to_legacy_iwae,
 )
 
 
@@ -86,7 +88,7 @@ class ActiveSMLMGMMTargetAdapter:
     ) -> None:
         self.photon_scale = None if photon_scale is None else float(photon_scale)
         self.z_scale = None if z_scale is None else float(z_scale)
-        self.target_order = _normalize_gmm_target_order(target_order)
+        self.target_order = normalize_pxyz_target_order(target_order)
         if disable_attr is None:
             self.disable_attr = ()
         elif isinstance(disable_attr, int):
@@ -104,26 +106,22 @@ class ActiveSMLMGMMTargetAdapter:
         if self.target_order == "legacy_iwae":
             converted = pxyz_tar.clone()
         else:
-            photons = pxyz_tar[..., 3]
-            z = pxyz_tar[..., 2]
-            if self.photon_scale is not None:
-                photons = photons / self.photon_scale
-            if self.z_scale is not None:
-                z = z / self.z_scale
-            converted = torch.stack((photons, pxyz_tar[..., 0], pxyz_tar[..., 1], z), dim=-1)
+            converted = v03_pxyz_to_legacy_iwae(
+                pxyz_tar,
+                photon_scale=self.photon_scale,
+                z_scale=self.z_scale,
+            )
         if self.disable_attr:
             converted = converted.clone()
             converted[..., list(self.disable_attr)] = 0.0
         return converted
 
     def v03_to_gmm_order(self, pxyz_tar: torch.Tensor) -> torch.Tensor:
-        photons = pxyz_tar[..., 3]
-        z = pxyz_tar[..., 2]
-        if self.photon_scale is not None:
-            photons = photons / self.photon_scale
-        if self.z_scale is not None:
-            z = z / self.z_scale
-        converted = torch.stack((photons, pxyz_tar[..., 0], pxyz_tar[..., 1], z), dim=-1)
+        converted = v03_pxyz_to_legacy_iwae(
+            pxyz_tar,
+            photon_scale=self.photon_scale,
+            z_scale=self.z_scale,
+        )
         if self.disable_attr:
             converted = converted.clone()
             converted[..., list(self.disable_attr)] = 0.0
@@ -306,15 +304,6 @@ def _bernoulli_probability_loss(prob: torch.Tensor, target: torch.Tensor) -> tor
     target = target.to(dtype=prob.dtype, device=prob.device)
     loss = -(target * torch.log(prob) + (1.0 - target) * torch.log1p(-prob))
     return loss.flatten(start_dim=1).mean(dim=1)
-
-
-def _normalize_gmm_target_order(value: str) -> str:
-    key = str(value or "legacy_iwae").strip().lower()
-    if key in {"legacy_iwae", "iwae", "old", "phot_xyz", "phot,x,y,z", "photons_x_y_z"}:
-        return "legacy_iwae"
-    if key in {"v03", "xyzph", "x,y,z,phot", "x_y_z_photons"}:
-        return "v03"
-    raise ValueError(f"unsupported active_smlm_gmm_loss target_order: {value!r}")
 
 
 def _masked_pxyz_gaussian_nll(

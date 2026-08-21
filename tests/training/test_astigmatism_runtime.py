@@ -9,9 +9,8 @@ import yaml
 
 from unity_psf.contracts.modality import PSFModality
 from unity_psf.localization.model import build_localization_model_registry
-from unity_psf.localization.runtime_config import (
+from unity_psf.localization.runtime import (
     build_localization_runtime_config,
-    resolve_localization_model_config,
 )
 from unity_psf.models.psf_moe.experts.astigmatism import AstigmatismExpert
 from unity_psf.runtime.layout import ensure_run_layout
@@ -59,6 +58,18 @@ def test_astigmatism_smoke_config_resolves_explicit_single_channel_contract() ->
     assert runtime_config["resolved_contract"]["input_frame_spec"] == runtime_config["input_frame_spec"]
     assert runtime_config["resolved_contract"]["channel_layout"] == runtime_config["channel_layout"]
     assert runtime_config["resolved_contract"]["expert_instance"] == runtime_config["expert_instance"]
+
+
+def test_runtime_builder_keeps_model_provider_loss_and_contract_in_lockstep() -> None:
+    runtime_config = build_localization_runtime_config(_config(), config_base_dir=CONFIG_PATH.parent, seed=41)
+
+    assert runtime_config["model"] == {
+        "name": "astigmatism_expert",
+        "params": runtime_config["resolved_contract"]["model"].get("params", runtime_config["model"]["params"]),
+    }
+    assert runtime_config["batch_provider"]["name"] == runtime_config["resolved_contract"]["batch_provider"]["name"]
+    assert runtime_config["loss"]["name"] == runtime_config["resolved_contract"]["loss"]["name"]
+    assert runtime_config["resolved_contract"]["batch_provider"]["pxyz_target_order"] == "legacy_iwae"
 
 
 def test_astigmatism_runtime_builds_one_model_and_trains_one_online_batch(tmp_path: Path) -> None:
@@ -116,11 +127,11 @@ def test_legacy_soft_moe_config_still_resolves_to_legacy_route() -> None:
         }
     }
 
-    model_name, model_params = resolve_localization_model_config(config)
+    runtime_config = build_localization_runtime_config(config)
 
-    assert model_name == "active_smlm_soft_moe_double_unet"
-    assert model_params["condition_dim"] == 4
-    assert model_params["domain_count"] == 2
+    assert runtime_config["model"]["name"] == "active_smlm_soft_moe_double_unet"
+    assert runtime_config["model"]["params"]["condition_dim"] == 4
+    assert runtime_config["model"]["params"]["domain_count"] == 2
 
 
 def test_astigmatism_contract_normalizes_expert_alias_and_preserves_frame_size() -> None:

@@ -7,6 +7,8 @@ from typing import Sequence
 import numpy as np
 import torch
 
+from .numerics import legendre_polynomial
+
 
 class DirectGammaZernikeField:
     def __init__(
@@ -54,11 +56,11 @@ class DirectGammaZernikeField:
             raise ValueError("Normalized coordinates must be finite.")
 
         x_basis = torch.stack(
-            [_legendre(degree, x) for degree in range(int(self.gamma_nm.shape[1]))],
+            [legendre_polynomial(degree, x) for degree in range(int(self.gamma_nm.shape[1]))],
             dim=-1,
         )
         y_basis = torch.stack(
-            [_legendre(degree, y) for degree in range(int(self.gamma_nm.shape[2]))],
+            [legendre_polynomial(degree, y) for degree in range(int(self.gamma_nm.shape[2]))],
             dim=-1,
         )
         return torch.einsum("cij,...i,...j->...c", self.gamma_nm, x_basis, y_basis)
@@ -126,22 +128,6 @@ def _validate_image_shape(image_shape_hw: tuple[int, int]) -> tuple[int, int]:
     ):
         raise ValueError("image_shape_hw dimensions must be positive integers.")
     return int(height), int(width)
-
-
-def _legendre(degree: int, values: torch.Tensor) -> torch.Tensor:
-    if degree == 0:
-        return torch.ones_like(values)
-    if degree == 1:
-        return values
-    previous_previous = torch.ones_like(values)
-    previous = values
-    for current_degree in range(2, degree + 1):
-        current = (
-            (2.0 * current_degree - 1.0) * values * previous
-            - (current_degree - 1.0) * previous_previous
-        ) / float(current_degree)
-        previous_previous, previous = previous, current
-    return previous
 
 
 __all__ = ["DirectGammaZernikeField"]

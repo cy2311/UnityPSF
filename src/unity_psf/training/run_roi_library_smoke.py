@@ -19,15 +19,15 @@ from unity_psf.localization.smlm_output import SMLMOutputChannels, decode_smlm_o
 from unity_psf.roi_library import ROIBank, save_roi_bank
 from unity_psf.runtime import ensure_run_layout
 from unity_psf.training import build_trainer_runtime
-from unity_psf.training.run_high_fidelity import (
-    _auto_build_roi_bank,
-    _build_vector_roi_gamma_objective,
-    _mapping,
-    _posterior_photon_scale,
-    _posterior_z_scale,
-    _resolve_roi_bank_source,
-    _roi_conditioning_context,
-    _run_peak_zmap_bootstrap_if_enabled,
+from unity_psf.training.high_fidelity.engine import _mapping
+from unity_psf.training.high_fidelity.peak_bootstrap import run_peak_zmap_bootstrap_if_enabled
+from unity_psf.training.high_fidelity.gamma_runtime import build_vector_roi_gamma_objective
+from unity_psf.training.high_fidelity.roi_bank_source import (
+    auto_build_roi_bank,
+    posterior_photon_scale,
+    posterior_z_scale,
+    resolve_roi_bank_source,
+    roi_conditioning_context,
 )
 
 
@@ -52,7 +52,7 @@ def main() -> int:
     config = load_config(config_path)
     config_base_dir = config_path.parent
     layout = ensure_run_layout(Path(args.run_root), args.run_name, stage_names=("peak", "roi_library_smoke"))
-    config = _run_peak_zmap_bootstrap_if_enabled(config, config_base_dir=config_base_dir, layout=layout)
+    config = run_peak_zmap_bootstrap_if_enabled(config, config_base_dir=config_base_dir, layout=layout)
     train_cfg = _mapping(config.get("train"), "train")
     gamma_cfg = _smoke_gamma_cfg(
         _mapping(train_cfg.get("roi_bank_gamma"), "train.roi_bank_gamma"),
@@ -69,10 +69,10 @@ def main() -> int:
     )
     if args.checkpoint is not None:
         _load_model_checkpoint(runtime.model, Path(args.checkpoint))
-    roi_source = _resolve_roi_bank_source(gamma_cfg, train_cfg=train_cfg, config=config, config_base_dir=config_base_dir)
+    roi_source = resolve_roi_bank_source(gamma_cfg, train_cfg=train_cfg, config=config, config_base_dir=config_base_dir)
     if roi_source is None:
         raise ValueError("ROI library smoke requires train.roi_bank_gamma.roi_bank_source / auto_build_roi_bank.")
-    bank = _auto_build_roi_bank(gamma_cfg, roi_source=roi_source, model=runtime.model, train_cfg=train_cfg)
+    bank = auto_build_roi_bank(gamma_cfg, roi_source=roi_source, model=runtime.model, train_cfg=train_cfg)
     output_dir = layout.stage_dir("roi_library_smoke")
     output_dir.mkdir(parents=True, exist_ok=True)
     roi_bank_path = output_dir / "roi_bank.h5"
@@ -145,7 +145,7 @@ def write_roi_library_smoke_diagnostics(
         return manifest
 
     subbank = ROIBank(records=records, config=bank.config, metadata=bank.metadata, empty_grid_cell_ids=bank.empty_grid_cell_ids)
-    conditioning = _roi_conditioning_context(train_cfg)
+    conditioning = roi_conditioning_context(train_cfg)
     loc_batch = build_roi_batch_provider(
         subbank,
         batch_size=len(records),
@@ -161,8 +161,8 @@ def write_roi_library_smoke_diagnostics(
         threshold=float(threshold),
         max_emitters=100,
         seed=0,
-        photon_scale=_posterior_photon_scale(train_cfg),
-        z_scale=_posterior_z_scale(train_cfg),
+        photon_scale=posterior_photon_scale(train_cfg),
+        z_scale=posterior_z_scale(train_cfg),
         candidate_threshold=float(
             gamma_cfg.get("posterior_candidate_probability_threshold", gamma_cfg.get("candidate_probability_threshold", 0.3))
         )
@@ -175,7 +175,7 @@ def write_roi_library_smoke_diagnostics(
     objective = None
     gamma = None
     if config is not None and gamma_cfg is not None:
-        objective = _build_vector_roi_gamma_objective(gamma_cfg, train_cfg=train_cfg, config=config, model=model)
+        objective = build_vector_roi_gamma_objective(gamma_cfg, train_cfg=train_cfg, config=config, model=model)
         gamma = objective.initial_gamma().detach()
     image_input = loc_batch.model_input[0] if isinstance(loc_batch.model_input, tuple) else loc_batch.model_input
     roi_origin_xy_px = torch.as_tensor(loc_batch.metadata["roi_origin_xy_px"], dtype=torch.float32)

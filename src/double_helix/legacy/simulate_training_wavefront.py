@@ -19,7 +19,7 @@ from unity_psf.localization.online import (
     build_online_batch_provider,
     build_sliding_window_origin_bank,
 )
-from unity_psf.localization.runtime_config import build_localization_runtime_config
+from unity_psf.localization.runtime import build_localization_runtime_config
 from unity_psf.optics.vector_psf import (
     VectorPSFParams,
     build_vector_psf_context,

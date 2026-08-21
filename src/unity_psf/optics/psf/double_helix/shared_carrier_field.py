@@ -9,6 +9,7 @@ import torch
 from .calibration import calibration_mode_order, interleaved_calibration_split, profile_photometry
 from .lg_calibration import fit_affine_residual_gamma_maps
 from .pixel_pupil_calibration import phase_only_complex_pupil, pupil_grid
+from .numerics import normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF, evaluate_normalized_zernike
 
 
@@ -285,7 +286,7 @@ def render_shared_field_calibration(
         reconstruction = reconstruction.reshape_as(observed)
         photons = photons.reshape(bead_count, len(z_values))
         background = background.reshape(bead_count, len(z_values))
-        ncc = _ncc(observed.flatten(0, 1), reconstruction.flatten(0, 1)).reshape(
+        ncc = normalized_cross_correlation(observed.flatten(0, 1), reconstruction.flatten(0, 1)).reshape(
             bead_count, len(z_values)
         )
 
@@ -369,17 +370,6 @@ def _robust_circular_mean(
         mean = vector / vector.abs().clamp_min(eps)
         mean = mean * pupil_mask
     return mean
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_centered = first - first.mean(dim=(-2, -1), keepdim=True)
-    second_centered = second - second.mean(dim=(-2, -1), keepdim=True)
-    numerator = (first_centered * second_centered).sum(dim=(-2, -1))
-    denominator = torch.sqrt(
-        first_centered.square().sum(dim=(-2, -1))
-        * second_centered.square().sum(dim=(-2, -1))
-    ).clamp_min(1e-12)
-    return numerator / denominator
 
 
 __all__ = [

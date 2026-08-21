@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Formal UnityPSF dual-modality, mixed-channel Expert Parallel training.
+# Formal UnityPSF dual-modality, dual-channel Expert Parallel training.
 
 #SBATCH --job-name=unitypsf_2gpu_300
 #SBATCH --partition=cpu1
@@ -15,9 +15,9 @@ set -euo pipefail
 PROJECT_ROOT="${SLURM_SUBMIT_DIR:-/home/guest/Others/main/race/unity}"
 PYTHON_BIN="${PYTHON:-/home/guest/anaconda3/bin/python}"
 TORCHRUN_BIN="${TORCHRUN:-/home/guest/anaconda3/bin/torchrun}"
-CONFIG="${UNITYPSF_JOINT_CONFIG:-$PROJECT_ROOT/configs/experiments/unitypsf_dual_modality_mixed_channel_300epoch.yaml}"
+CONFIG="${UNITYPSF_JOINT_CONFIG:-$PROJECT_ROOT/configs/experiments/unitypsf_dual_modality_dual_channel_300epoch.yaml}"
 RUN_ROOT="${UNITYPSF_RUN_ROOT:-$PROJECT_ROOT/output/unitypsf}"
-RUN_ID="${UNITYPSF_RUN_ID:-dual-modality-mixed-channel-300epoch-${SLURM_JOB_ID:-local}}"
+RUN_ID="${UNITYPSF_RUN_ID:-dual-modality-dual-channel-300epoch-${SLURM_JOB_ID:-local}}"
 
 cd "$PROJECT_ROOT"
 mkdir -p \

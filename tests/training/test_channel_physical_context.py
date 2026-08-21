@@ -16,7 +16,7 @@ from unity_psf.training.channel_context import (
     atomic_write_json,
     sha256_file,
 )
-from unity_psf.training.run_high_fidelity import _peak_bootstrap_config, _single_channel_peak_domain
+from unity_psf.training.high_fidelity.peak_bootstrap import peak_bootstrap_config as _peak_bootstrap_config, single_channel_peak_domain as _single_channel_peak_domain
 from unity_psf.optics.profiles import resolve_astigmatism_anchor_profile
 
 

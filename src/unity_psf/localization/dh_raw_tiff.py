@@ -8,7 +8,10 @@ import numpy as np
 import tifffile
 import torch
 
-from unity_psf.models.psf_moe.experts.double_helix import DoubleHelixDirectXYZLoss
+from unity_psf.models.psf_moe.experts.double_helix import (
+    DoubleHelixDirectXYZLoss,
+    DoubleHelixImageExpert,
+)
 from unity_psf.localization.training_adapter import LocalizationTrainBatch
 
 
@@ -214,16 +217,3 @@ class DHDirectXYZLossAdapter:
         device = output.detection_logits.device
         targets = {key: value.to(device=device) for key, value in batch.targets.items()}
         return self.loss(output, targets)
-
-
-class DoubleHelixRuntimeModel(torch.nn.Module):
-    def __init__(self, in_channels: int = 3, feature_channels: int = 32):
-        super().__init__()
-        from unity_psf.models.psf_moe import PSFMoE
-        self.base = PSFMoE(in_channels=in_channels, feature_channels=feature_channels)
-
-    def forward(self, images: torch.Tensor, conditions=None):
-        return self.base(images, modality="double_helix")
-
-    def checkpoint_metadata(self, **kwargs):
-        return self.base.experts["double_helix"].checkpoint_metadata(**kwargs)

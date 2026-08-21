@@ -1,12 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 import torch
 
+from unity_psf.contracts import ChannelLayout, logical_sha256, sha256_file
 from unity_psf.runtime.layout import RunLayout
-from unity_psf.training.loop import BatchProvider, EpochTrainingConfig, LossFn
+from unity_psf.training.loop import (
+    BatchProvider,
+    EpochTrainingConfig,
+    LossFn,
+    initialize_model_from_checkpoint,
+)
 
 
 ModelFactory = Callable[[dict[str, object]], torch.nn.Module]
@@ -23,6 +30,52 @@ class TrainerRuntime:
     config: EpochTrainingConfig
     layout: RunLayout
     loss_fn: LossFn | None = None
+
+
+def prepare_instance_runtime(
+    runtime: TrainerRuntime,
+    runtime_config: Mapping[str, Any],
+    *,
+    config_base_dir: Path,
+) -> tuple[TrainerRuntime, dict[str, Any] | None]:
+    instance = runtime_config.get("expert_instance")
+    if not isinstance(instance, Mapping):
+        return runtime, None
+    checkpoint_metadata = getattr(runtime.model, "checkpoint_metadata", None)
+    if not callable(checkpoint_metadata):
+        raise TypeError("an expert instance model must expose checkpoint_metadata()")
+
+    prototype_ref = instance.get("prototype_ref")
+    initialization: dict[str, Any]
+    if prototype_ref is None:
+        parent_hash = logical_sha256(runtime.model.state_dict())
+        initialization = {"source": "random_initialization", "sha256": parent_hash}
+    else:
+        prototype_path = Path(str(prototype_ref))
+        if not prototype_path.is_absolute():
+            prototype_path = (config_base_dir / prototype_path).resolve()
+        initialize_model_from_checkpoint(
+            prototype_path,
+            model=runtime.model,
+            expected_expert_type=str(instance["expert_type"]),
+        )
+        parent_hash = sha256_file(prototype_path)
+        initialization = {
+            "source": "prototype_checkpoint",
+            "path": str(prototype_path),
+            "sha256": parent_hash,
+        }
+
+    channel_layout = ChannelLayout.from_value(runtime_config["channel_layout"])
+    channel_id = str(instance["channel_id"])
+    channel_spec = next(channel for channel in channel_layout.channels if channel.channel_id == channel_id)
+    metadata = checkpoint_metadata(
+        checkpoint_role="instance",
+        instance_id=str(instance["instance_id"]),
+        channel_spec=channel_spec,
+        parent_checkpoint_hash=parent_hash,
+    )
+    return replace(runtime, config=replace(runtime.config, checkpoint_metadata=metadata)), initialization
 
 
 def build_trainer_runtime(

@@ -26,9 +26,9 @@ from unity_psf.training.localizer_eval import (
     _offset_emitter_set,
     build_localizer_eval_provider,
 )
-from unity_psf.training.run_high_fidelity import (
-    _condition_store_batch_provider_overrides,
-    _condition_store_from_runtime_config,
+from unity_psf.training.high_fidelity.condition_runtime import (
+    condition_store_batch_provider_overrides,
+    condition_store_from_runtime_config,
 )
 
 from .evaluate_z_bins import RunZBinResult, evaluate_z_bins, write_z_bin_package
@@ -132,7 +132,7 @@ def evaluate_run(
         config_base_dir=config_base_dir,
         seed=int(_mapping(train_cfg.get("eval"), "train.eval").get("seed", 100000)),
     )
-    condition_store = _condition_store_from_runtime_config(runtime_config)
+    condition_store = condition_store_from_runtime_config(runtime_config)
     if condition_store is None:
         raise RuntimeError("double-helix evaluation requires physical conditioning maps")
     layout = ensure_run_layout(runtime_root, spec.name)
@@ -140,7 +140,7 @@ def evaluate_run(
         runtime_config,
         layout=layout,
         model_registry=build_localization_model_registry(),
-        batch_provider_overrides=_condition_store_batch_provider_overrides(condition_store),
+        batch_provider_overrides=condition_store_batch_provider_overrides(condition_store),
     )
     device = torch.device(str(runtime_config["device"]))
     if device.type != "cuda":

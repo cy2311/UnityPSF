@@ -141,14 +141,3 @@ def test_existing_batch_and_output_contracts_remain_usable() -> None:
         photons=torch.ones(2, 4, 4),
     )
     assert output.validate(batch_size=2) is output
-
-
-def test_psf_moe_default_accepts_three_temporal_input_frames() -> None:
-    from unity_psf.models.psf_moe import PSFMoE
-    from unity_psf.models.psf_moe.base import SharedPSFStem
-
-    model = PSFMoE(feature_channels=8).eval()
-    assert SharedPSFStem().in_channels == 3
-    with torch.no_grad():
-        output = model(torch.zeros(1, 3, 8, 8), PSFModality.DOUBLE_HELIX)
-    assert output.detection_logits.shape == (1, 8, 8)

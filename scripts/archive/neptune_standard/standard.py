@@ -17,7 +17,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from unity_psf.config import materialize_config
-from unity_psf.localization.runtime_config import build_localization_runtime_config
+from unity_psf.localization.runtime import build_localization_runtime_config
 
 BASE_CONFIG = ROOT / "configs" / "base" / "microtube.yaml"
 STANDARD_OVERRIDE = ROOT / "configs" / "overrides" / "standard_roi_gamma.yaml"

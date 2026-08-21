@@ -6,8 +6,7 @@ import torch
 from unity_psf.contracts.modality import PSFModality
 from unity_psf.localization.film import FiLMConditionedDoubleUNet
 from unity_psf.localization.smlm_output import SMLMOutputChannels, decode_smlm_output
-from unity_psf.models.psf_moe import PSFMoE
-from unity_psf.models.psf_moe.experts.astigmatism import AstigmatismExpert, LegacyAstigmatismExpert
+from unity_psf.models.psf_moe.experts.astigmatism import AstigmatismExpert
 
 
 def _build_expert() -> AstigmatismExpert:
@@ -86,11 +85,3 @@ def test_astigmatism_expert_requires_explicit_image_and_condition_contract() -> 
         AstigmatismExpert(condition_fields="zernike")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="activation"):
         AstigmatismExpert(activation=torch.nn.PReLU())  # type: ignore[arg-type]
-
-
-def test_legacy_psf_moe_keeps_feature_adapter_separate_from_complete_expert() -> None:
-    model = PSFMoE(in_channels=3, feature_channels=4)
-    assert isinstance(model.experts[PSFModality.ASTIGMATISM.value], LegacyAstigmatismExpert)
-    images = torch.randn(1, 3, 8, 8)
-    output = model(images, PSFModality.ASTIGMATISM)
-    assert output.detection_logits.shape == (1, 8, 8)

@@ -17,7 +17,7 @@ from unity_psf.localization.legacy_decode import (
 from unity_psf.localization.conditioning import ConditioningProviderStore
 from unity_psf.localization.materialized_eval import MaterializedDatasetEvalConfig, build_materialized_dataset_eval_provider
 from unity_psf.localization.online import OnlineBatchProviderConfig, build_online_batch_provider
-from unity_psf.localization.runtime_config import build_localization_runtime_config
+from unity_psf.localization.runtime import build_localization_runtime_config
 from unity_psf.localization.training_adapter import LocalizationTrainBatch, localization_batch_to_device
 from unity_psf.training.loop import TrainingBatch, evaluate
 

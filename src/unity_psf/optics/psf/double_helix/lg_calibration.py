@@ -16,6 +16,7 @@ from .calibration import (
     z_bin_balanced_mean,
 )
 from .lg_carrier import CANONICAL_DH_LG_MODES, laguerre_gaussian_basis, lg_dh_carrier
+from .numerics import normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF
 
 
@@ -381,7 +382,7 @@ def fit_lg_residual_calibration(
         flat_observed = observed.reshape(-1, config.roi_size, config.roi_size)
         flat_unit = unit_flux.reshape_as(flat_observed)
         reconstruction, photons, background = profile_photometry(flat_observed, flat_unit)
-        ncc = _ncc(flat_observed, reconstruction).reshape(bead_count, len(z_values))
+        ncc = normalized_cross_correlation(flat_observed, reconstruction).reshape(bead_count, len(z_values))
 
     gamma_np = residual_gamma.detach().cpu().numpy().astype(np.float32)
     zernike_maps, field_coefficients = fit_affine_residual_gamma_maps(
@@ -521,17 +522,6 @@ def _multibead_paired_loss(
             + config.paired_center_weight * center
         )
     return torch.stack(losses).mean()
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_centered = first - first.mean(dim=(-2, -1), keepdim=True)
-    second_centered = second - second.mean(dim=(-2, -1), keepdim=True)
-    numerator = (first_centered * second_centered).sum(dim=(-2, -1))
-    denominator = torch.sqrt(
-        first_centered.square().sum(dim=(-2, -1))
-        * second_centered.square().sum(dim=(-2, -1))
-    ).clamp_min(1e-12)
-    return numerator / denominator
 
 
 __all__ = [

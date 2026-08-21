@@ -3,22 +3,18 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
-import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Sequence
 
-import numpy as np
 import torch
-import yaml
 
 from unity_psf.config import load_config, resolve_config_reference
-from unity_psf.contracts import ChannelLayout, JointExpertKey, load_joint_checkpoint
+from unity_psf.contracts import JointExpertKey, load_joint_checkpoint, sha256_file
 from unity_psf.localization import build_localization_model_registry, build_localization_runtime_config
 from unity_psf.localization.training_adapter import LocalizationTrainBatch
 from unity_psf.models import UnityPSF
-from unity_psf.reporting import InstanceVisualRecord, generate_visible_validation_report
+from unity_psf.reporting import generate_visible_validation_report
 from unity_psf.runtime import ensure_run_layout, write_run_manifest, write_stage_status
 from unity_psf.training import (
     ExpertTrainingUnit,
@@ -28,7 +24,9 @@ from unity_psf.training import (
     commit_joint_training_checkpoint,
     train_round_robin_epoch,
 )
-from unity_psf.training.run_localization import _prepare_instance_runtime
+from unity_psf.training.joint_config import bind_instance, instance_specs, load_joint_config
+from unity_psf.training.runtime import prepare_instance_runtime
+from unity_psf.training.validation import build_instance_visual_record
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -38,84 +36,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--device", help="Override every instance device, for example cuda:0.")
     return parser
-
-
-def _mapping(value: Any, label: str) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping):
-        raise ValueError(f"{label} must be a mapping")
-    return value
-
-
-def _load_joint_config(path: Path, *, expected_execution: str | None = "round_robin") -> Mapping[str, Any]:
-    value = yaml.safe_load(path.read_text(encoding="utf-8"))
-    config = _mapping(value, "joint config")
-    if config.get("schema_version") != "unitypsf.joint_training.v1":
-        raise ValueError("unsupported joint training schema")
-    execution = str(config.get("execution", "round_robin"))
-    if expected_execution is not None and execution != expected_execution:
-        raise ValueError(f"this entrypoint requires execution: {expected_execution}")
-    return config
-
-
-def _instance_specs(config: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    raw = config.get("instances")
-    if not isinstance(raw, list) or not raw:
-        raise ValueError("joint config instances must be a non-empty list")
-    specs: dict[str, Mapping[str, Any]] = {}
-    for item in raw:
-        spec = _mapping(item, "instance")
-        if "key" not in spec or "config" not in spec:
-            raise ValueError("every joint instance requires key and config")
-        key = JointExpertKey.parse(str(spec["key"])).storage_key
-        if key in specs:
-            raise ValueError(f"duplicate joint instance key {key!r}")
-        if JointExpertKey.parse(key).modality.value not in {"emitter_2d", "astigmatism", "double_helix"}:
-            raise ValueError(f"unsupported trainable modality in joint config: {key!r}")
-        specs[key] = spec
-    modalities = {JointExpertKey.parse(key).modality.value for key in specs}
-    if not {"emitter_2d", "astigmatism"}.issubset(modalities):
-        raise ValueError("joint config must include emitter_2d and astigmatism instances")
-    return specs
-
-
-def _bind_instance(config: Mapping[str, Any], key: str, *, device: str | None) -> dict[str, Any]:
-    bound = deepcopy(dict(config))
-    train = dict(_mapping(bound.get("train"), "train"))
-    parsed = JointExpertKey.parse(key)
-    layout = ChannelLayout.from_value(train.get("channel_layout", {"channels": ["main"]}))
-    matching = [channel for channel in layout.channels if channel.channel_id == parsed.channel_id]
-    if matching:
-        channel = matching[0]
-    elif len(layout.channels) == 1:
-        template = layout.channels[0]
-        channel = type(template)(
-            channel_id=parsed.channel_id,
-            crop=template.crop,
-            anchor_profile=template.anchor_profile,
-            calibration_ref=template.calibration_ref,
-        )
-    else:
-        raise ValueError(f"config has no measurement channel {parsed.channel_id!r}")
-    channel_value = {
-        "id": channel.channel_id,
-        "crop": channel.crop,
-        "anchor_profile": channel.anchor_profile,
-        "calibration_ref": channel.calibration_ref,
-    }
-    train["channel_layout"] = {
-        "channels": [{name: value for name, value in channel_value.items() if value is not None}],
-        **({"frame_size": list(layout.frame_size)} if layout.frame_size is not None else {}),
-    }
-    train["expert"] = {
-        **dict(_mapping(train.get("expert", {}), "train.expert")),
-        "expert_type": parsed.modality.value,
-        "instance_id": parsed.channel_id,
-        "channel_id": parsed.channel_id,
-    }
-    if device is not None:
-        train["device"] = device
-    bound["train"] = train
-    return bound
 
 
 def _routed_batches(runtime, epoch: int):
@@ -135,57 +55,17 @@ def _routed_batch(training_batch) -> RoutedTrainingBatch:
     return RoutedTrainingBatch(images=images, conditions=conditions, target=training_batch)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def _visual_record(
-    key: str,
-    batch: RoutedTrainingBatch,
-    localization,
-    *,
-    losses: Sequence[float],
-    steps: int,
-    checkpoint_hash: str,
-) -> InstanceVisualRecord:
-    image_stack = batch.images[0].detach().cpu()
-    input_image = image_stack.mean(dim=0).numpy()
-    probability = localization.decoded.p[0].detach().cpu()
-    photon_map = localization.decoded.pxyz_mu[0, 0].detach().cpu().clamp_min(0)
-    selected = torch.topk(probability.reshape(-1), k=min(8, probability.numel())).indices
-    width = probability.shape[1]
-    prediction_xy = torch.stack((selected % width, selected // width), dim=1).numpy().astype(np.float32)
-    reconstruction = (probability * photon_map).numpy()
-    return InstanceVisualRecord(
-        instance_key=key,
-        input_image=input_image,
-        patches=tuple(frame.numpy() for frame in image_stack),
-        loss_history=tuple(losses),
-        route_count=1,
-        step_count=steps,
-        sample_count=steps * int(batch.images.shape[0]),
-        prediction_xy=prediction_xy,
-        reconstruction=reconstruction,
-        status="trained-smoke",
-        checkpoint_hash=checkpoint_hash,
-    )
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    joint_config = _load_joint_config(args.config)
-    specs = _instance_specs(joint_config)
+    joint_config = load_joint_config(args.config)
+    specs = instance_specs(joint_config)
     layout = ensure_run_layout(args.run_root, args.run_id, stage_names=("joint_training",))
     runtimes = {}
     runtime_configs = {}
     for key in specs:
         spec = specs[key]
         config_path = resolve_config_reference(spec["config"], source_path=args.config)
-        instance_config = _bind_instance(load_config(config_path), key, device=args.device)
+        instance_config = bind_instance(load_config(config_path), key, device=args.device)
         model_seed = int(spec.get("model_seed", spec.get("seed", 0)))
         data_seed = int(spec.get("data_seed", spec.get("seed", 0)))
         torch.manual_seed(model_seed)
@@ -200,7 +80,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             layout=instance_layout,
             model_registry=build_localization_model_registry(),
         )
-        runtime, _ = _prepare_instance_runtime(runtime, runtime_config, config_base_dir=config_path.parent)
+        runtime, _ = prepare_instance_runtime(
+            runtime,
+            runtime_config,
+            config_base_dir=config_path.parent,
+        )
         runtimes[key] = runtime
         runtime_configs[key] = runtime_config
 
@@ -260,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             conditions=batch.conditions,
         )
         visual_records.append(
-            _visual_record(
+            build_instance_visual_record(
                 key,
                 batch,
                 localization,
@@ -273,13 +157,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         layout.run_dir,
         visual_records,
         run_id=args.run_id,
-        provenance={"checkpoint_sha256": _sha256(checkpoint_path), "evidence_level": "synthetic-smoke"},
+        provenance={"checkpoint_sha256": sha256_file(checkpoint_path), "evidence_level": "synthetic-smoke"},
     )
     summary = {
         "schema_version": "unitypsf.joint_training_summary.v1",
         "status": "complete",
         "checkpoint": str(checkpoint_path),
-        "checkpoint_sha256": _sha256(checkpoint_path),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
         "instances": {
             key: {"steps": steps[key], "losses": losses[key], "parameter_count": model.describe()["parameter_counts"][key]}
             for key in plan.instance_keys

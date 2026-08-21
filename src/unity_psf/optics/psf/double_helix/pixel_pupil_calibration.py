@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from .calibration import interleaved_calibration_split, profile_photometry, z_bin_balanced_mean
+from .numerics import normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF, evaluate_normalized_zernike
 
 
@@ -298,7 +299,7 @@ def fit_single_pixel_pupil(
         complex_pupil = phase_only_complex_pupil(pupil_phase, pupil_mask)
         unit_flux = render(raw_phase, dx_affine, dy_affine, all_planes)
         reconstruction, photons, background = profile_photometry(observed, unit_flux)
-        ncc = _ncc(observed, reconstruction)
+        ncc = normalized_cross_correlation(observed, reconstruction)
         final_objective = float(objective(raw_phase, dx_affine, dy_affine, train).item())
         heldout = torch.as_tensor(heldout_indices, dtype=torch.long, device=device)
         metrics: dict[str, float | int | bool | str] = {
@@ -350,18 +351,7 @@ def _profiled_per_plane_loss(
         + observed * (torch.log(observed_positive) - torch.log(expected))
     )
     poisson = deviance.mean(dim=(-2, -1)) / observed.mean(dim=(-2, -1)).clamp_min(1.0)
-    return poisson_weight * poisson + ncc_weight * (1.0 - _ncc(observed, expected))
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_centered = first - first.mean(dim=(-2, -1), keepdim=True)
-    second_centered = second - second.mean(dim=(-2, -1), keepdim=True)
-    numerator = (first_centered * second_centered).sum(dim=(-2, -1))
-    denominator = torch.sqrt(
-        first_centered.square().sum(dim=(-2, -1))
-        * second_centered.square().sum(dim=(-2, -1))
-    ).clamp_min(1e-12)
-    return numerator / denominator
+    return poisson_weight * poisson + ncc_weight * (1.0 - normalized_cross_correlation(observed, expected))
 
 
 __all__ = [

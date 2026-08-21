@@ -425,7 +425,7 @@ def assemble_joint_checkpoint(
                 model_class={
                     PSFModality.EMITTER_2D: "unity_psf.models.psf_moe.experts.emitter_2d.Emitter2DExpert",
                     PSFModality.ASTIGMATISM: "unity_psf.models.psf_moe.experts.astigmatism.AstigmatismExpert",
-                    PSFModality.DOUBLE_HELIX: "unity_psf.models.psf_moe.experts.double_helix.DoubleHelixExpert",
+                    PSFModality.DOUBLE_HELIX: "unity_psf.models.psf_moe.experts.double_helix.DoubleHelixImageExpert",
                 }[key.modality],
                 model_config=checkpoint_metadata.model_config,
                 input_frame_spec=checkpoint_metadata.input_frame_spec,

@@ -7,14 +7,12 @@ import numpy as np
 import pytest
 import yaml
 
-from unity_psf.localization.runtime_config import build_localization_runtime_config
+from unity_psf.localization.runtime import build_localization_runtime_config
 from unity_psf.runtime.layout import ensure_run_layout
 from unity_psf.training.channel_context import ChannelTrainingContext, sha256_file
-from unity_psf.training.run_high_fidelity import (
-    _physical_checkpoint_extra_fn,
-    _select_single_channel_roi_split,
-    _single_channel_peak_domain,
-)
+from unity_psf.training.high_fidelity.physical_state import _physical_checkpoint_extra_fn
+from unity_psf.training.high_fidelity.peak_bootstrap import single_channel_peak_domain as _single_channel_peak_domain
+from unity_psf.training.high_fidelity.gamma_runtime import select_single_channel_roi_split
 
 
 def _channel_runtime_config(channel_id: str, *, crop: tuple[int, int, int, int]) -> dict[str, object]:
@@ -214,7 +212,7 @@ def test_astigmatism_channel_runtime_overrides_legacy_soft_moe_dimensions() -> N
 def test_single_channel_gamma_binds_a_unique_domain_to_current_channel() -> None:
     left_bank = object()
 
-    selected = _select_single_channel_roi_split({"left": (left_bank, None)}, "right")
+    selected = select_single_channel_roi_split({"left": (left_bank, None)}, "right")
 
     assert tuple(selected) == ("right",)
     assert selected["right"] == (left_bank, None)

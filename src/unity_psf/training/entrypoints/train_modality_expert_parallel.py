@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 
 import torch
 
-from unity_psf.contracts import JointExpertKey, PSFModality, load_modality_joint_checkpoint
+from unity_psf.contracts import JointExpertKey, PSFModality, load_modality_joint_checkpoint, sha256_file
 from unity_psf.models import UnityPSF
 from unity_psf.reporting import generate_visible_validation_report
 from unity_psf.runtime import ensure_run_layout, write_run_manifest, write_stage_status
@@ -29,9 +29,21 @@ from unity_psf.training.modality_joint import (
     save_modality_training_shard,
     train_modality_epoch,
 )
-
-from .train_joint import _instance_specs, _load_joint_config, _sha256, _visual_record
-from .train_modality_joint import _build_modality_runtime, _config_path, _modality_groups
+from unity_psf.training.modality_progress import (
+    accumulate_epoch as _accumulate_epoch,
+    accumulate_heldout as _accumulate_heldout,
+    channel_progress as _channel_progress,
+    empty_metrics as _empty_metrics,
+    heldout_eval_enabled as _heldout_eval_enabled,
+    metrics_from_progress as _metrics_from_progress,
+)
+from unity_psf.training.joint_config import instance_specs, load_joint_config
+from unity_psf.training.modality_runtime import (
+    build_modality_runtime,
+    config_path,
+    modality_groups,
+)
+from unity_psf.training.validation import build_instance_visual_record
 
 
 _VISIBLE_HELDOUT_METRICS = (
@@ -79,7 +91,7 @@ def _training_signature(
     digest = hashlib.sha256()
     files = [("joint", joint_path.resolve())]
     files.extend(
-        (key, _config_path(joint_path, specs[key]["config"]))
+        (key, config_path(joint_path, specs[key]["config"]))
         for key in sorted(specs)
     )
     for label, path in files:
@@ -117,142 +129,6 @@ def _atomic_torch_save(payload: Mapping[str, Any], path: Path) -> Path:
     finally:
         temporary.unlink(missing_ok=True)
     return path
-
-
-def _empty_metrics(runtime: ModalityTrainingRuntime) -> dict[str, Any]:
-    return {
-        "optimizer_steps": 0,
-        "attempted_optimizer_steps": 0,
-        "skipped_optimizer_steps": 0,
-        "epochs_completed": 0,
-        "heldout_history": [],
-        "channels": {
-            channel_id: {
-                "steps": 0,
-                "optimizer_steps": 0,
-                "skipped_optimizer_steps": 0,
-                "samples": 0,
-                "losses": [],
-                "heldout_history": [],
-            }
-            for channel_id in runtime.channels
-        },
-    }
-
-
-def _metrics_from_progress(
-    runtime: ModalityTrainingRuntime,
-    *,
-    epoch: int,
-    optimizer_steps: int,
-    progress: Mapping[str, Mapping[str, Any]],
-) -> dict[str, Any]:
-    if set(progress) != set(runtime.channels):
-        raise ValueError("resume channel progress does not match the modality runtime")
-    modality_histories = [
-        list(progress[channel_id].get("modality_heldout_history", ()))
-        for channel_id in runtime.channels
-    ]
-    modality_history = modality_histories[0]
-    if any(history != modality_history for history in modality_histories[1:]):
-        raise ValueError("resume channel copies of modality held-out history differ")
-    return {
-        "optimizer_steps": int(optimizer_steps),
-        "attempted_optimizer_steps": sum(
-            int(progress[channel_id].get("steps", 0)) for channel_id in runtime.channels
-        ),
-        "skipped_optimizer_steps": sum(
-            int(progress[channel_id].get("skipped_optimizer_steps", 0))
-            for channel_id in runtime.channels
-        ),
-        "epochs_completed": int(epoch),
-        "heldout_history": [dict(item) for item in modality_history],
-        "channels": {
-            channel_id: {
-                "steps": int(progress[channel_id].get("steps", 0)),
-                "optimizer_steps": int(
-                    progress[channel_id].get(
-                        "optimizer_steps", progress[channel_id].get("steps", 0)
-                    )
-                ),
-                "skipped_optimizer_steps": int(
-                    progress[channel_id].get("skipped_optimizer_steps", 0)
-                ),
-                "samples": int(progress[channel_id].get("samples", 0)),
-                "losses": [float(item) for item in progress[channel_id].get("losses", ())],
-                "heldout_history": [
-                    dict(item)
-                    for item in progress[channel_id].get("heldout_history", ())
-                ],
-            }
-            for channel_id in runtime.channels
-        },
-    }
-
-
-def _channel_progress(metrics: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        channel_id: {
-            "steps": int(values["steps"]),
-            "optimizer_steps": int(values["optimizer_steps"]),
-            "skipped_optimizer_steps": int(values["skipped_optimizer_steps"]),
-            "samples": int(values["samples"]),
-            "losses": list(values["losses"]),
-            "heldout_history": list(values["heldout_history"]),
-            "modality_heldout_history": list(metrics["heldout_history"]),
-        }
-        for channel_id, values in metrics["channels"].items()
-    }
-
-
-def _accumulate_epoch(metrics: dict[str, Any], result) -> None:
-    metrics["optimizer_steps"] += result.optimizer_steps
-    metrics["attempted_optimizer_steps"] += result.attempted_optimizer_steps
-    metrics["skipped_optimizer_steps"] += result.skipped_optimizer_steps
-    metrics["epochs_completed"] = result.epoch
-    for channel_id, channel_metrics in metrics["channels"].items():
-        channel_metrics["steps"] += result.step_counts[channel_id]
-        channel_metrics["optimizer_steps"] += result.optimizer_steps_by_channel[channel_id]
-        channel_metrics["skipped_optimizer_steps"] += (
-            result.skipped_optimizer_steps_by_channel[channel_id]
-        )
-        channel_metrics["samples"] += result.sample_counts[channel_id]
-        channel_metrics["losses"].extend(result.losses_by_channel[channel_id])
-
-
-def _accumulate_heldout(metrics: dict[str, Any], result, *, epoch: int) -> None:
-    channel_results = {}
-    for channel_id, values in result.channels.items():
-        channel_values = {
-            **dict(values),
-            "optimizer_steps": int(metrics["channels"][channel_id]["optimizer_steps"]),
-            "skipped_optimizer_steps": int(
-                metrics["channels"][channel_id]["skipped_optimizer_steps"]
-            ),
-        }
-        metrics["channels"][channel_id]["heldout_history"].append(
-            {"epoch": int(epoch), **channel_values}
-        )
-        channel_results[channel_id] = channel_values
-    metrics["heldout_history"].append(
-        {
-            "epoch": int(epoch),
-            "modality": {
-                **dict(result.modality),
-                "optimizer_steps": int(metrics["optimizer_steps"]),
-            },
-            "channels": channel_results,
-        }
-    )
-
-
-def _heldout_eval_enabled(runtime: ModalityTrainingRuntime) -> bool:
-    enabled = [
-        stream.heldout_eval is not None for stream in runtime.channels.values()
-    ]
-    if any(enabled) and not all(enabled):
-        raise ValueError("held-out eval must be enabled for all channels or none")
-    return all(enabled)
 
 
 def _read_completed_rank_statuses(
@@ -317,7 +193,7 @@ def _train_owned_modality(
     attempt_id: str,
     training_signature: str,
 ) -> dict[str, Any]:
-    runtime, _, formal_runtime_contracts = _build_modality_runtime(
+    runtime, _, formal_runtime_contracts = build_modality_runtime(
         modality,
         entries,
         joint_path=args.config,
@@ -548,7 +424,7 @@ def _publish_joint_release(
                 conditions=batch.conditions,
             )
             channel_metrics = status["metrics"]["channels"][channel_id]
-            record = _visual_record(
+            record = build_instance_visual_record(
                 JointExpertKey(modality, channel_id).storage_key,
                 batch,
                 localization,
@@ -604,7 +480,7 @@ def _publish_joint_release(
         records,
         run_id=args.run_id,
         provenance={
-            "checkpoint_sha256": _sha256(checkpoint_path),
+            "checkpoint_sha256": sha256_file(checkpoint_path),
             "execution": "expert_parallel",
             "cuda_confirmed": cuda_confirmed,
         },
@@ -619,7 +495,7 @@ def _publish_joint_release(
         "training_signature": training_signature,
         "cuda_confirmed": cuda_confirmed,
         "checkpoint": str(checkpoint_path),
-        "checkpoint_sha256": _sha256(checkpoint_path),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
         "report": str(report.report_path),
         "modalities": {
             str(status["owned_modality"]): status["metrics"] for status in rank_statuses
@@ -662,13 +538,13 @@ def _publish_joint_release(
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     rank, world_size, local_rank = _distributed_identity()
-    joint_config = _load_joint_config(args.config, expected_execution="expert_parallel")
+    joint_config = load_joint_config(args.config, expected_execution="expert_parallel")
     if joint_config.get("rank_assignment") != "one_modality_per_rank":
         raise ValueError("modality Expert Parallel requires rank_assignment: one_modality_per_rank")
-    specs = _instance_specs(joint_config)
+    specs = instance_specs(joint_config)
     current_attempt = _attempt_id()
     training_signature = _training_signature(args.config, specs)
-    grouped = _modality_groups(specs)
+    grouped = modality_groups(specs)
     assignments = tuple(grouped)
     if world_size != len(assignments):
         raise ValueError(f"configured Expert Parallel requires exactly {len(assignments)} ranks")

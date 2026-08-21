@@ -191,8 +191,8 @@ def build_localization_model_registry():
         return Emitter2DExpert(**params)
 
     def double_helix_expert(params: dict[str, object]) -> torch.nn.Module:
-        from unity_psf.localization.dh_raw_tiff import DoubleHelixRuntimeModel
-        return DoubleHelixRuntimeModel(**params)
+        from unity_psf.models.psf_moe.experts.double_helix import DoubleHelixImageExpert
+        return DoubleHelixImageExpert(**params)
 
     return {
         "active_smlm_double_unet": active_smlm_double_unet,

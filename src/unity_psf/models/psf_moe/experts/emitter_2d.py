@@ -11,7 +11,6 @@ from unity_psf.contracts.checkpoint import CheckpointMetadata
 from unity_psf.contracts.modality import InputFrameSpec, MeasurementChannelSpec, PSFModality
 from unity_psf.localization.losses import ActiveSMLMGMMLoss
 from unity_psf.models.psf_moe.experts.astigmatism import AstigmatismExpert
-from unity_psf.models.psf_moe.base import AdaptedPSFExpert
 
 
 DEFAULT_EMITTER_2D_CONDITION_FIELDS = ("field_x", "field_y")
@@ -108,18 +107,8 @@ class Emitter2DGMMLoss(ActiveSMLMGMMLoss):
         super().__init__(disable_attr=_Z_ATTRIBUTE_INDEX, **kwargs)
 
 
-class LegacyEmitter2DExpert(AdaptedPSFExpert):
-    """Feature adapter retained only for the early shared-stem PSFMoE scaffold."""
-
-    modality = PSFModality.EMITTER_2D
-
-    def __init__(self, feature_channels: int = 32) -> None:
-        super().__init__(feature_channels)
-
-
 __all__ = [
     "DEFAULT_EMITTER_2D_CONDITION_FIELDS",
     "Emitter2DExpert",
     "Emitter2DGMMLoss",
-    "LegacyEmitter2DExpert",
 ]

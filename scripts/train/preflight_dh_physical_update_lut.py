@@ -13,7 +13,7 @@ import yaml
 from unity_psf.localization.dh_raw_tiff import (
     DHDirectXYZLossAdapter,
     DHRawTiffBatchProviderConfig,
-    DoubleHelixRuntimeModel,
+    DoubleHelixImageExpert,
     build_dh_raw_tiff_batch_provider,
 )
 
@@ -28,7 +28,7 @@ def main() -> int:
     dh_config = dict(config["dh_raw_tiff"])
     dh_config.pop("enabled", None)
     batch = next(iter(build_dh_raw_tiff_batch_provider(DHRawTiffBatchProviderConfig(**dh_config))(1)))
-    model = DoubleHelixRuntimeModel(**dict(config["model"]["params"])).cuda().eval()
+    model = DoubleHelixImageExpert(**dict(config["model"]["params"])).cuda().eval()
     with torch.no_grad():
         output = model(batch.inputs.cuda(non_blocking=True))
         loss = DHDirectXYZLossAdapter(dict(config["loss"].get("params", {}))).from_output(output, batch)

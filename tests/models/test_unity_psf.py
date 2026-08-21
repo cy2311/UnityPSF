@@ -13,6 +13,7 @@ from unity_psf.contracts import (
 )
 from unity_psf.models import UnityPSF
 from unity_psf.models.psf_moe.experts.emitter_2d import Emitter2DExpert
+from unity_psf.models.psf_moe.experts.double_helix import DoubleHelixImageExpert
 from unity_psf.models.psf_moe.router import ModalityRouter
 
 
@@ -224,3 +225,32 @@ def test_unity_psf_loads_v2_checkpoint_with_one_network_and_nested_channels(tmp_
     assert torch.equal(actual_right, expected)
     assert list(restored.experts) == ["emitter_2d"]
     assert restored.describe()["supported_channels"] == {"emitter_2d": ["left", "right"]}
+
+
+def test_unity_psf_routes_dh_through_standalone_image_expert() -> None:
+    expert = DoubleHelixImageExpert(
+        nch_in=3,
+        depth_shared=1,
+        depth_union=1,
+        nfeatures_init=4,
+        nfeatures_inter=4,
+        norm_groups=0,
+        dropout_start_level=None,
+        p_dropout=0.0,
+    ).eval()
+    model = UnityPSF(
+        {"double_helix": expert},
+        channel_states={"double_helix": {"main": {"physical_state": {}, "calibration": {}}}},
+    ).eval()
+    images = torch.randn(1, 3, 16, 16)
+
+    with torch.no_grad():
+        expected = expert(images)
+        actual = model(images, modality="double_helix", channel_id="main")
+
+    assert torch.equal(actual[:, 0], expected.detection_logits)
+    assert torch.equal(actual[:, 1], expected.photons)
+    assert torch.equal(actual[:, 2], expected.xy_offset[:, 0])
+    assert torch.equal(actual[:, 3], expected.xy_offset[:, 1])
+    assert torch.equal(actual[:, 4], expected.z)
+    assert not any(type(module).__name__ == "SharedPSFStem" for module in expert.modules())

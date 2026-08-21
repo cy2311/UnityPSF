@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from .localization import IndependentLocalizations
+from .numerics import legendre_polynomial
 from .vector_model import DoubleHelixVectorPSF
 
 
@@ -66,7 +67,7 @@ def evaluate_residual_coefficients(
     x_normalized = -1.0 + 2.0 * x / float(width)
     y_normalized = -1.0 + 2.0 * y / float(height)
     design = torch.stack(
-        [_legendre(px, x_normalized) * _legendre(py, y_normalized) for px, py in terms],
+        [legendre_polynomial(px, x_normalized) * legendre_polynomial(py, y_normalized) for px, py in terms],
         dim=1,
     )
     return design @ parameters.T
@@ -356,22 +357,6 @@ def _frame_backgrounds(
         else:
             backgrounds[local_index] = float(np.median(frames_adu[local_index]))
     return torch.as_tensor(backgrounds, dtype=torch.float32, device=device)
-
-
-def _legendre(degree: int, values: torch.Tensor) -> torch.Tensor:
-    if degree == 0:
-        return torch.ones_like(values)
-    if degree == 1:
-        return values
-    previous_previous = torch.ones_like(values)
-    previous = values
-    for current_degree in range(2, int(degree) + 1):
-        current = (
-            (2.0 * current_degree - 1.0) * values * previous
-            - (current_degree - 1.0) * previous_previous
-        ) / float(current_degree)
-        previous_previous, previous = previous, current
-    return previous
 
 
 __all__ = [

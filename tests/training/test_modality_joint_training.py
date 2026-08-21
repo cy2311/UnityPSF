@@ -8,9 +8,15 @@ import torch
 import yaml
 from torch import nn
 
-from unity_psf.contracts import CheckpointMetadata, InputFrameSpec, load_modality_joint_checkpoint
+from unity_psf.contracts import (
+    CheckpointMetadata,
+    InputFrameSpec,
+    PSFModality,
+    load_modality_joint_checkpoint,
+)
 from unity_psf.localization.legacy_decode import LegacyEmitterSet, evaluate_legacy_localizations
 from unity_psf.models import UnityPSF
+from unity_psf.runtime import ensure_run_layout
 from unity_psf.training.modality_joint import (
     ModalityChannelStream,
     ModalityTrainingBatch,
@@ -22,6 +28,7 @@ from unity_psf.training.modality_joint import (
     save_modality_training_shard,
     train_modality_epoch,
 )
+from unity_psf.training.modality_runtime import build_modality_runtime
 
 
 class _TrainableExpert(nn.Module):
@@ -115,6 +122,45 @@ def test_one_modality_runtime_owns_one_model_and_optimizer_for_both_channels() -
     assert optimizer_parameters == {id(parameter) for parameter in runtime.model.parameters()}
     assert all(not hasattr(channel, "model") for channel in runtime.channels.values())
     assert all(not hasattr(channel, "optimizer") for channel in runtime.channels.values())
+
+
+def test_public_runtime_builder_resolves_shared_astigmatism_channels(
+    tmp_path: Path,
+) -> None:
+    config_path = (
+        Path(__file__).parents[2]
+        / "configs/modalities/astigmatism/astigmatism_single_channel_smoke.yaml"
+    )
+    joint_path = tmp_path / "joint.yaml"
+    joint_path.write_text("schema_version: unitypsf.joint_training.v1\n", encoding="utf-8")
+    entries = (
+        (
+            "astigmatism:left",
+            {"config": str(config_path), "model_seed": 101, "data_seed": 201, "step_budget": 1},
+        ),
+        (
+            "astigmatism:right",
+            {"config": str(config_path), "model_seed": 101, "data_seed": 202, "step_budget": 1},
+        ),
+    )
+
+    runtime, runtime_configs, formal_evidence = build_modality_runtime(
+        PSFModality.ASTIGMATISM,
+        entries,
+        joint_path=joint_path,
+        run_layout=ensure_run_layout(tmp_path, "resolved-runtime"),
+        device="cpu",
+    )
+
+    assert set(runtime.channels) == {"left", "right"}
+    assert set(runtime_configs) == {"left", "right"}
+    assert formal_evidence is None
+    assert runtime_configs["left"]["expert_instance"]["channel_id"] == "left"
+    assert runtime_configs["right"]["expert_instance"]["channel_id"] == "right"
+    assert {
+        channel_id: stream.provenance["config"]
+        for channel_id, stream in runtime.channels.items()
+    } == {"left": str(config_path), "right": str(config_path)}
 
 
 def test_balanced_channels_update_the_same_model_and_report_independent_metrics() -> None:

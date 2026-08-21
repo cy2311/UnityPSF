@@ -9,6 +9,7 @@ from scipy.optimize import linear_sum_assignment
 
 from .calibration import profile_photometry
 from .gamma_field import DirectGammaZernikeField
+from .numerics import normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF
 
 
@@ -327,7 +328,7 @@ def _refine_candidates(
             _, photons, background = profile_photometry(observed, unit_flux)
             observed_unit = ((observed - background[:, None, None]) / photons[:, None, None]).clamp_min(0.0)
             observed_unit = observed_unit / observed_unit.sum(dim=(1, 2), keepdim=True).clamp_min(1e-12)
-            ncc = _ncc(observed_unit, unit_flux)
+            ncc = normalized_cross_correlation(observed_unit, unit_flux)
         outputs.append(
             np.column_stack(
                 (
@@ -406,16 +407,6 @@ def match_localizations(
         dy_nm=errors[:, 1],
         dz_nm=errors[:, 2],
     )
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_flat = first.flatten(1)
-    second_flat = second.flatten(1)
-    first_centered = first_flat - first_flat.mean(dim=1, keepdim=True)
-    second_centered = second_flat - second_flat.mean(dim=1, keepdim=True)
-    return (first_centered * second_centered).sum(dim=1) / torch.sqrt(
-        first_centered.square().sum(dim=1) * second_centered.square().sum(dim=1)
-    ).clamp_min(1e-12)
 
 
 __all__ = [

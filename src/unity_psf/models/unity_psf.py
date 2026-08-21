@@ -32,7 +32,7 @@ from unity_psf.localization.smlm_output import (
 
 from .psf_moe.experts.astigmatism import AstigmatismExpert
 from .psf_moe.experts.emitter_2d import Emitter2DExpert
-from unity_psf.localization.dh_raw_tiff import DoubleHelixRuntimeModel
+from .psf_moe.experts.double_helix import DoubleHelixImageExpert
 from .psf_moe.router import InstanceRouter, ModalityRouter
 
 
@@ -222,9 +222,7 @@ class UnityPSF(nn.Module):
         if parsed is PSFModality.ASTIGMATISM:
             return AstigmatismExpert(**dict(model_config))
         if parsed is PSFModality.DOUBLE_HELIX:
-            return DoubleHelixRuntimeModel(
-                feature_channels=int(model_config.get("feature_channels", 32)),
-            )
+            return DoubleHelixImageExpert(**dict(model_config))
         raise ValueError(f"unsupported trained expert modality {parsed.value!r}")
 
     def _selected_expert(self, storage_key: str) -> nn.Module:

@@ -3,18 +3,20 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 import torch
 import pytest
 import yaml
 
-from unity_psf.cli.train_joint import _bind_instance, _instance_specs, _load_joint_config
 from unity_psf.config import load_config, resolve_config_reference
 from unity_psf.localization import build_localization_model_registry, build_localization_runtime_config
 from unity_psf.runtime import ensure_run_layout
 from unity_psf.training import build_trainer_runtime
 from unity_psf.training.channel_context import sha256_file
+from unity_psf.training.joint_config import bind_instance, instance_specs, load_joint_config
+from unity_psf.training.modality_runtime import build_modality_runtime, modality_groups
 
 
 CONFIG_DIR = Path(__file__).parents[2] / "configs"
@@ -42,20 +44,22 @@ def _load(name: str) -> dict:
     return value
 
 
-def test_formal_joint_config_declares_three_instances_and_two_rank_assignment() -> None:
-    config = _load("unitypsf_dual_modality_mixed_channel_300epoch.yaml")
+def test_formal_joint_config_declares_dual_channels_and_two_rank_assignment() -> None:
+    config = _load("unitypsf_dual_modality_dual_channel_300epoch.yaml")
 
     assert config["execution"] == "expert_parallel"
     assert config["rank_assignment"] == "one_modality_per_rank"
     assert config["epochs"] == 300
     assert [item["key"] for item in config["instances"]] == [
         "emitter_2d:left",
+        "emitter_2d:right",
         "astigmatism:left",
         "astigmatism:right",
     ]
     assert {item["step_budget"] for item in config["instances"]} == {417}
-    assert config["instances"][1]["model_seed"] == config["instances"][2]["model_seed"]
-    assert len({item["data_seed"] for item in config["instances"]}) == 3
+    assert config["instances"][0]["model_seed"] == config["instances"][1]["model_seed"]
+    assert config["instances"][2]["model_seed"] == config["instances"][3]["model_seed"]
+    assert len({item["data_seed"] for item in config["instances"]}) == 4
 
 
 def test_three_modality_dh_contract_matches_astigmatism_epoch_exposure() -> None:
@@ -78,21 +82,23 @@ def test_three_modality_dh_contract_matches_astigmatism_epoch_exposure() -> None
 
 
 def test_gpu_gate_reuses_formal_instance_contracts_with_amp_warmup_steps() -> None:
-    config = _load("unitypsf_dual_modality_mixed_channel_gpu_smoke.yaml")
+    config = _load("unitypsf_dual_modality_dual_channel_gpu_smoke.yaml")
 
     assert config["epochs"] == 1
     assert {item["config"] for item in config["instances"]} == {
-        "project://configs/modalities/emitter_2d/emitter_2d_single_channel_300epoch.yaml",
+        "project://configs/modalities/emitter_2d/emitter_2d_dual_channel_300epoch.yaml",
         "project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml",
     }
     assert {item["key"]: item["step_budget"] for item in config["instances"]} == {
-        "emitter_2d:left": 16,
+        "emitter_2d:left": 8,
+        "emitter_2d:right": 8,
         "astigmatism:left": 8,
         "astigmatism:right": 8,
     }
     assert config["metadata"]["formal_contract_gate"] is True
     assert [item["key"] for item in config["instances"]] == [
         "emitter_2d:left",
+        "emitter_2d:right",
         "astigmatism:left",
         "astigmatism:right",
     ]
@@ -235,23 +241,23 @@ def test_formal_instance_configs_share_density_background_and_photon_contract() 
 
 
 def test_formal_runtime_audit_rejects_optimizer_loss_and_physical_state_drift(tmp_path: Path) -> None:
-    from unity_psf.cli.train_modality_joint import _audit_formal_runtime_contracts
+    from unity_psf.training.modality_runtime import audit_formal_runtime_contracts
 
-    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_mixed_channel_300epoch.yaml"
-    specs = _instance_specs(_load_joint_config(joint_path, expected_execution="expert_parallel"))
+    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_dual_channel_300epoch.yaml"
+    specs = instance_specs(load_joint_config(joint_path, expected_execution="expert_parallel"))
     astigmatism_configs = {}
     for key, spec in specs.items():
         if not key.startswith("astigmatism:"):
             continue
         instance_path = resolve_config_reference(spec["config"], source_path=joint_path)
-        bound = _bind_instance(load_config(instance_path), key, device="cpu")
+        bound = bind_instance(load_config(instance_path), key, device="cpu")
         astigmatism_configs[key.split(":", maxsplit=1)[1]] = build_localization_runtime_config(
             bound,
             config_base_dir=CONFIG_DIR,
             seed=3,
         )
 
-    evidence = _audit_formal_runtime_contracts("astigmatism", astigmatism_configs)
+    evidence = audit_formal_runtime_contracts("astigmatism", astigmatism_configs)
 
     assert set(evidence) == {"left", "right"}
     assert all(item["optimizer"] == "AdamW" for item in evidence.values())
@@ -263,39 +269,39 @@ def test_formal_runtime_audit_rejects_optimizer_loss_and_physical_state_drift(tm
     wrong_optimizer = deepcopy(astigmatism_configs)
     wrong_optimizer["left"]["optimizer"] = {"name": "sgd", "params": {"lr": 0.001}}
     with pytest.raises(ValueError, match="AdamW"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_optimizer)
+        audit_formal_runtime_contracts("astigmatism", wrong_optimizer)
 
     wrong_lr = deepcopy(astigmatism_configs)
     wrong_lr["left"]["optimizer"]["params"]["lr"] = 0.001
     with pytest.raises(ValueError, match="lr=0.0006"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_lr)
+        audit_formal_runtime_contracts("astigmatism", wrong_lr)
 
     wrong_loss = deepcopy(astigmatism_configs)
     wrong_loss["left"]["loss"] = {"name": "active_smlm_loss", "params": {}}
     with pytest.raises(ValueError, match="GMM"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_loss)
+        audit_formal_runtime_contracts("astigmatism", wrong_loss)
 
     wrong_gmm = deepcopy(astigmatism_configs)
     wrong_gmm["left"]["loss"]["params"]["gmm_backend"] = "manual"
     with pytest.raises(ValueError, match="mixture_same_family"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_gmm)
+        audit_formal_runtime_contracts("astigmatism", wrong_gmm)
 
     wrong_scheduler = deepcopy(astigmatism_configs)
     wrong_scheduler["left"]["resolved_contract"]["training_runtime"]["scheduler"]["params"]["step_size"] = 1000
     with pytest.raises(ValueError, match="StepLR"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_scheduler)
+        audit_formal_runtime_contracts("astigmatism", wrong_scheduler)
 
     empty_physics = deepcopy(astigmatism_configs)
     empty_physics["right"]["batch_provider"]["params"]["dual_domain_coeff_maps"] = ()
     with pytest.raises(ValueError, match="coefficient map"):
-        _audit_formal_runtime_contracts("astigmatism", empty_physics)
+        audit_formal_runtime_contracts("astigmatism", empty_physics)
 
     emitter_configs = {}
     for key, spec in specs.items():
         if not key.startswith("emitter_2d:"):
             continue
         instance_path = resolve_config_reference(spec["config"], source_path=joint_path)
-        bound = _bind_instance(load_config(instance_path), key, device="cpu")
+        bound = bind_instance(load_config(instance_path), key, device="cpu")
         emitter_configs[key.split(":", maxsplit=1)[1]] = build_localization_runtime_config(
             bound,
             config_base_dir=CONFIG_DIR,
@@ -306,12 +312,12 @@ def test_formal_runtime_audit_rejects_optimizer_loss_and_physical_state_drift(tm
         {"name": "left", "coeff_maps_npz": str(path)},
     )
 
-    emitter_evidence = _audit_formal_runtime_contracts("emitter_2d", emitter_configs)
+    emitter_evidence = audit_formal_runtime_contracts("emitter_2d", emitter_configs)
 
     assert {item["psf_type"] for item in emitter_evidence.values()} == {"vector"}
     assert {item["simulation_backend"] for item in emitter_evidence.values()} == {"lut"}
     assert {tuple(item["z_range_um"]) for item in emitter_evidence.values()} == {(-0.1, 0.1)}
-    assert set(emitter_evidence) == {"left"}
+    assert set(emitter_evidence) == {"left", "right"}
     assert {item["emitter_density_um2"] for item in emitter_evidence.values()} == {0.5}
     assert {tuple(item["background_range_photons"]) for item in emitter_evidence.values()} == {
         (110.0, 110.0)
@@ -343,42 +349,50 @@ def test_formal_runtime_audit_rejects_optimizer_loss_and_physical_state_drift(tm
     wrong_emitter_psf = deepcopy(emitter_configs)
     wrong_emitter_psf["left"]["batch_provider"]["params"]["psf_type"] = "empirical_focal"
     with pytest.raises(ValueError, match="vector LUT"):
-        _audit_formal_runtime_contracts("emitter_2d", wrong_emitter_psf)
+        audit_formal_runtime_contracts("emitter_2d", wrong_emitter_psf)
 
     wrong_density = deepcopy(emitter_configs)
     wrong_density["left"]["batch_provider"]["params"]["emitter_density_um2"] = None
     with pytest.raises(ValueError, match="density=0.5"):
-        _audit_formal_runtime_contracts("emitter_2d", wrong_density)
+        audit_formal_runtime_contracts("emitter_2d", wrong_density)
 
     wrong_background = deepcopy(astigmatism_configs)
     wrong_background["right"]["batch_provider"]["params"]["background_range"] = (40.0, 120.0)
     with pytest.raises(ValueError, match="background=110"):
-        _audit_formal_runtime_contracts("astigmatism", wrong_background)
+        audit_formal_runtime_contracts("astigmatism", wrong_background)
 
 
 def test_formal_runtime_audit_uses_modality_specific_channel_contracts() -> None:
-    from unity_psf.cli.train_modality_joint import _audit_formal_runtime_contracts
+    from unity_psf.training.modality_runtime import audit_formal_runtime_contracts
 
-    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_mixed_channel_300epoch.yaml"
-    specs = _instance_specs(_load_joint_config(joint_path, expected_execution="expert_parallel"))
+    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_dual_channel_300epoch.yaml"
+    specs = instance_specs(load_joint_config(joint_path, expected_execution="expert_parallel"))
     runtime_configs = {}
     for key, spec in specs.items():
         instance_path = resolve_config_reference(spec["config"], source_path=joint_path)
-        bound = _bind_instance(load_config(instance_path), key, device="cpu")
+        bound = bind_instance(load_config(instance_path), key, device="cpu")
         runtime_configs[key] = build_localization_runtime_config(
             bound,
             config_base_dir=CONFIG_DIR,
             seed=int(spec["data_seed"]),
         )
 
-    emitter_evidence = _audit_formal_runtime_contracts(
+    emitter_evidence = audit_formal_runtime_contracts(
         "emitter_2d",
-        {"left": runtime_configs["emitter_2d:left"]},
+        {
+            "left": runtime_configs["emitter_2d:left"],
+            "right": runtime_configs["emitter_2d:right"],
+        },
     )
 
-    assert set(emitter_evidence) == {"left"}
+    assert set(emitter_evidence) == {"left", "right"}
     with pytest.raises(ValueError, match="left and right"):
-        _audit_formal_runtime_contracts(
+        audit_formal_runtime_contracts(
+            "emitter_2d",
+            {"left": runtime_configs["emitter_2d:left"]},
+        )
+    with pytest.raises(ValueError, match="left and right"):
+        audit_formal_runtime_contracts(
             "astigmatism",
             {"left": runtime_configs["astigmatism:left"]},
         )
@@ -387,13 +401,13 @@ def test_formal_runtime_audit_uses_modality_specific_channel_contracts() -> None
 def test_formal_sampling_and_recenter_contract_enters_channel_checkpoint_metadata(
     tmp_path: Path,
 ) -> None:
-    from unity_psf.cli.train_modality_joint import _channel_metadata
+    from unity_psf.training.modality_runtime import channel_metadata
 
     joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_dual_channel_300epoch.yaml"
-    specs = _instance_specs(_load_joint_config(joint_path, expected_execution="expert_parallel"))
+    specs = instance_specs(load_joint_config(joint_path, expected_execution="expert_parallel"))
     spec = specs["emitter_2d:left"]
     config_path = resolve_config_reference(spec["config"], source_path=joint_path)
-    bound = _bind_instance(load_config(config_path), "emitter_2d:left", device="cpu")
+    bound = bind_instance(load_config(config_path), "emitter_2d:left", device="cpu")
     runtime_config = build_localization_runtime_config(
         bound,
         config_base_dir=CONFIG_DIR,
@@ -406,7 +420,7 @@ def test_formal_sampling_and_recenter_contract_enters_channel_checkpoint_metadat
     physical_state_path = tmp_path / "current_physical_state.json"
     physical_state_path.write_text('{"schema_version": "test"}\n', encoding="utf-8")
 
-    _, calibration, provenance = _channel_metadata(
+    _, calibration, provenance = channel_metadata(
         runtime_config,
         physical_context=SimpleNamespace(physical_state_path=physical_state_path),
         config_path=config_path,
@@ -429,13 +443,13 @@ def test_formal_sampling_and_recenter_contract_enters_channel_checkpoint_metadat
     assert calibration["coefficient_map_sha256"] == sha256_file(coefficient_map)
 
 
-def test_formal_joint_config_builds_all_three_bound_training_runtimes(tmp_path: Path) -> None:
-    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_mixed_channel_300epoch.yaml"
-    specs = _instance_specs(_load_joint_config(joint_path, expected_execution="expert_parallel"))
+def test_formal_joint_config_builds_all_dual_channel_training_runtimes(tmp_path: Path) -> None:
+    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_dual_channel_300epoch.yaml"
+    specs = instance_specs(load_joint_config(joint_path, expected_execution="expert_parallel"))
 
     for key, spec in specs.items():
         instance_path = resolve_config_reference(spec["config"], source_path=joint_path)
-        bound = _bind_instance(load_config(instance_path), key, device="cpu")
+        bound = bind_instance(load_config(instance_path), key, device="cpu")
         bound["train"]["online_generation"]["simulation_backend"] = "native"
         bound["train"]["online_generation"]["simulation_output_device"] = "cpu"
         if key.startswith("emitter_2d:"):
@@ -476,6 +490,59 @@ def test_formal_joint_config_builds_all_three_bound_training_runtimes(tmp_path: 
             assert entries[0]["name"] == key.split(":", maxsplit=1)[1]
 
 
+def test_formal_runtime_builder_audits_dual_channel_emitter_and_astigmatism(
+    tmp_path: Path,
+) -> None:
+    joint_path = CONFIG_DIR / "experiments/unitypsf_dual_modality_dual_channel_gpu_smoke.yaml"
+    specs = instance_specs(load_joint_config(joint_path, expected_execution="expert_parallel"))
+    grouped = modality_groups(specs)
+
+    model = torch.nn.Linear(1, 1)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=0.0006, weight_decay=0.1)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.9)
+    fake_runtime = SimpleNamespace(
+        model=model,
+        optimizer=optimizer,
+        scheduler=scheduler,
+        batch_provider=lambda epoch: (),
+        loss_fn=SimpleNamespace(from_output=lambda output, target: output),
+        config=SimpleNamespace(
+            scheduler_step_unit="epoch",
+            grad_clip_norm=0.03,
+            amp_enabled=True,
+            amp_dtype=torch.float16,
+        ),
+    )
+
+    with patch("unity_psf.training.modality_runtime.build_trainer_runtime", return_value=fake_runtime), patch(
+        "unity_psf.training.modality_runtime.build_runtime_batch_provider",
+        return_value=lambda epoch: (),
+    ), patch(
+        "unity_psf.training.modality_runtime.build_runtime_loss",
+        return_value=SimpleNamespace(from_output=lambda output, target: output),
+    ), patch(
+        "unity_psf.training.modality_runtime.prepare_instance_runtime",
+        side_effect=lambda runtime, runtime_config, config_base_dir: (runtime, None),
+    ), patch(
+        "unity_psf.training.modality_runtime.build_localizer_eval_provider",
+        return_value=None,
+    ):
+        for modality, entries in grouped.items():
+            runtime, runtime_configs, evidence = build_modality_runtime(
+                modality,
+                entries,
+                joint_path=joint_path,
+                run_layout=ensure_run_layout(tmp_path, modality.value),
+                device="cpu",
+            )
+            assert set(runtime.channels) == {"left", "right"}
+            assert set(runtime_configs) == {"left", "right"}
+            assert evidence is not None
+            assert set(evidence) == {"left", "right"}
+            assert runtime.model is model
+            assert runtime.optimizer is optimizer
+
+
 def test_formal_slurm_entrypoint_requires_two_gpus_and_no_cpu_fallback() -> None:
     script = (CONFIG_DIR.parent / "scripts" / "train" / "unitypsf_dual_modality_dual_channel_2gpu_300epoch.sbatch").read_text(
         encoding="utf-8"
@@ -486,5 +553,5 @@ def test_formal_slurm_entrypoint_requires_two_gpus_and_no_cpu_fallback() -> None
     assert "--nproc-per-node=2" in script
     assert "--allow-cpu-smoke" not in script
     assert "CUDA unavailable: formal training refuses CPU fallback" in script
-    assert "unitypsf_dual_modality_mixed_channel_300epoch.yaml" in script
+    assert "unitypsf_dual_modality_dual_channel_300epoch.yaml" in script
     assert '--coordination-timeout-seconds "${UNITYPSF_COORDINATION_TIMEOUT_SECONDS:-21600}"' in script

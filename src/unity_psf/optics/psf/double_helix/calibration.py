@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 from .dataset import Microscope1Dataset
+from .numerics import normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF
 
 
@@ -378,7 +379,7 @@ def deep_z_per_plane_losses(
     log_ratio = torch.where(values > 0.0, values * (values.clamp_min(1e-12).log() - mean.log()), 0.0)
     poisson_deviance = 2.0 * (mean - values + log_ratio)
     poisson_loss = poisson_deviance.mean(dim=(1, 2)) / values.mean(dim=(1, 2)).clamp_min(1.0)
-    ncc_loss = 1.0 - _ncc(observed_unit, unit_flux_psf)
+    ncc_loss = 1.0 - normalized_cross_correlation(observed_unit, unit_flux_psf)
     geometry_loss = lobe_geometry_loss(observed_unit, unit_flux_psf)
     return (
         config.poisson_loss_weight * poisson_loss
@@ -660,7 +661,7 @@ def _evaluate_candidate(
         ).mean(dim=(1, 2))
         observed_unit = ((observed - background[:, None, None]) / photons[:, None, None]).clamp_min(0.0)
         observed_unit = observed_unit / observed_unit.sum(dim=(1, 2), keepdim=True).clamp_min(1e-12)
-        ncc = _ncc(observed_unit, unit_flux)
+        ncc = normalized_cross_correlation(observed_unit, unit_flux)
         nrmse = torch.sqrt((observed_unit - unit_flux).square().mean(dim=(1, 2))) / torch.sqrt(
             observed_unit.square().mean(dim=(1, 2))
         ).clamp_min(1e-12)
@@ -732,14 +733,6 @@ def _evaluate_candidate(
         "z_values": z_values.detach().clone(),
         "metrics": metrics,
     }
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_centered = first.flatten(1) - first.flatten(1).mean(dim=1, keepdim=True)
-    second_centered = second.flatten(1) - second.flatten(1).mean(dim=1, keepdim=True)
-    numerator = (first_centered * second_centered).sum(dim=1)
-    denominator = torch.sqrt(first_centered.square().sum(dim=1) * second_centered.square().sum(dim=1))
-    return numerator / denominator.clamp_min(1e-12)
 
 
 def _lobe_angle_errors(observed: torch.Tensor, reconstructed: torch.Tensor) -> torch.Tensor:

@@ -12,7 +12,6 @@ from unity_psf.contracts.modality import InputFrameSpec, MeasurementChannelSpec,
 from unity_psf.localization.film import FiLMConditionedDoubleUNet
 from unity_psf.localization.smlm_output import SMLMOutputChannels
 from unity_psf.localization.smlm_unet import DoubleUNet
-from unity_psf.models.psf_moe.base import AdaptedPSFExpert
 
 
 DEFAULT_ASTIGMATISM_CONDITION_FIELDS = (
@@ -47,8 +46,7 @@ class AstigmatismExpert(nn.Module):
     """A standalone FiLM-conditioned DoubleUNet for astigmatic localization.
 
     The expert owns its complete image encoder, union backbone, FiLM module, and
-    SMLM heads.  It deliberately accepts the raw preprocessed image rather than
-    a feature tensor produced by ``SharedPSFStem``.
+    SMLM heads. It accepts the raw preprocessed image directly.
     """
 
     modality = PSFModality.ASTIGMATISM
@@ -229,17 +227,7 @@ class AstigmatismExpert(nn.Module):
         )
 
 
-class LegacyAstigmatismExpert(AdaptedPSFExpert):
-    """Feature-tensor adapter retained only for the early ``PSFMoE`` scaffold."""
-
-    modality = PSFModality.ASTIGMATISM
-
-    def __init__(self, feature_channels: int = 32) -> None:
-        super().__init__(feature_channels, auxiliary_channels={"astigmatism_width": 2})
-
-
 __all__ = [
     "AstigmatismExpert",
     "DEFAULT_ASTIGMATISM_CONDITION_FIELDS",
-    "LegacyAstigmatismExpert",
 ]

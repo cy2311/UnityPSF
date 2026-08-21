@@ -8,6 +8,7 @@ import torch
 
 from .calibration import profile_photometry
 from .local_fit import OracleObservations
+from .numerics import legendre_polynomial, normalized_cross_correlation
 from .vector_model import DoubleHelixVectorPSF
 
 
@@ -326,7 +327,7 @@ def _evaluate_rows(
             loss = (observed - reconstruction).square().mean(dim=(1, 2)) / config.noise_variance_adu2
             observed_unit = ((observed - background[:, None, None]) / photons[:, None, None]).clamp_min(0.0)
             observed_unit = observed_unit / observed_unit.sum(dim=(1, 2), keepdim=True).clamp_min(1e-12)
-            ncc = _ncc(observed_unit, unit_flux)
+            ncc = normalized_cross_correlation(observed_unit, unit_flux)
         losses.append(loss.cpu().numpy())
         correlations.append(ncc.cpu().numpy())
     return np.concatenate(losses), np.concatenate(correlations)
@@ -366,25 +367,9 @@ def _spatial_design_torch(
     x_normalized = -1.0 + 2.0 * x_px / float(width)
     y_normalized = -1.0 + 2.0 * y_px / float(height)
     return torch.stack(
-        [_legendre(px, x_normalized) * _legendre(py, y_normalized) for px, py in terms],
+        [legendre_polynomial(px, x_normalized) * legendre_polynomial(py, y_normalized) for px, py in terms],
         dim=1,
     )
-
-
-def _legendre(degree: int, values: torch.Tensor) -> torch.Tensor:
-    if degree == 0:
-        return torch.ones_like(values)
-    if degree == 1:
-        return values
-    previous_previous = torch.ones_like(values)
-    previous = values
-    for current_degree in range(2, degree + 1):
-        current = (
-            (2.0 * current_degree - 1.0) * values * previous
-            - (current_degree - 1.0) * previous_previous
-        ) / float(current_degree)
-        previous_previous, previous = previous, current
-    return previous
 
 
 def _constant_gamma(global_values: np.ndarray, spatial_shape: tuple[int, int]) -> np.ndarray:
@@ -425,16 +410,6 @@ def _block_bootstrap_ci(
         means[iteration] = float(np.mean(values[rows]))
     low, high = np.percentile(means, (2.5, 97.5))
     return float(low), float(high)
-
-
-def _ncc(first: torch.Tensor, second: torch.Tensor) -> torch.Tensor:
-    first_flat = first.flatten(1)
-    second_flat = second.flatten(1)
-    first_centered = first_flat - first_flat.mean(dim=1, keepdim=True)
-    second_centered = second_flat - second_flat.mean(dim=1, keepdim=True)
-    return (first_centered * second_centered).sum(dim=1) / torch.sqrt(
-        first_centered.square().sum(dim=1) * second_centered.square().sum(dim=1)
-    ).clamp_min(1e-12)
 
 
 __all__ = [

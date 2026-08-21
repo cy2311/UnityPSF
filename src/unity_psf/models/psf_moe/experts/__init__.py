@@ -3,15 +3,13 @@
 from .astigmatism import (
     DEFAULT_ASTIGMATISM_CONDITION_FIELDS,
     AstigmatismExpert,
-    LegacyAstigmatismExpert,
 )
-from .double_helix import DoubleHelixExpert
+from .double_helix import DoubleHelixImageExpert
 from .emitter_2d import Emitter2DExpert
 
 __all__ = [
     "AstigmatismExpert",
     "DEFAULT_ASTIGMATISM_CONDITION_FIELDS",
-    "DoubleHelixExpert",
+    "DoubleHelixImageExpert",
     "Emitter2DExpert",
-    "LegacyAstigmatismExpert",
 ]

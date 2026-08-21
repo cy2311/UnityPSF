@@ -20,7 +20,7 @@ from .microtube_tiff import MicrotubeTiffBatchProviderConfig, build_microtube_ti
 from .online import OnlineBatchProviderConfig, build_online_batch_provider
 from .posterior import DetectionPosteriorSamples, sample_detection_posterior
 from .roi_batches import build_roi_batch_provider
-from .runtime_config import build_localization_runtime_config
+from .runtime import build_localization_runtime_config
 from .simulator import LocalizationSimulatorConfig, simulate_localization_batch
 from .smlm_output import SMLMOutput, SMLMOutputChannels, decode_smlm_output
 from .smlm_targets import SMLMTargetConvention, absolute_pxyz_to_local_targets, legacy_iwae_target_process_to_v03, target_pixel_indices

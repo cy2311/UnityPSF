@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import subprocess
 import sys
 from pathlib import Path
@@ -21,7 +20,13 @@ from unity_psf.infer_recon.predictions_io import (
     prediction_attributes,
     prediction_fieldnames,
 )
-from unity_psf.infer_recon.filter.filter import FilterConfig, compute_locprec_xy_nm
+from unity_psf.infer_recon.filter.filter import (
+    FilterConfig,
+    _first_optional_float,
+    _optional_float,
+    _psf_xy_nm_from_row,
+    compute_locprec_xy_nm,
+)
 from unity_psf.infer_recon.standard import camera_pixels_from_runtime, read_json, write_json
 
 
@@ -66,34 +71,6 @@ COMPACT_RENDER_COLUMNS = (
     "psf_y_nm",
     "psf_xy_nm",
 )
-
-
-def _optional_float(value: object) -> float | None:
-    if value in {None, ""}:
-        return None
-    out = float(value)
-    return out if math.isfinite(out) else None
-
-
-def _first_optional_float(row: dict[str, object], keys: tuple[str, ...]) -> float | None:
-    for key in keys:
-        value = _optional_float(row.get(key))
-        if value is not None:
-            return value
-    return None
-
-
-def _psf_xy_nm_from_row(row: dict[str, object]) -> float | None:
-    direct = _first_optional_float(row, ("psf_xy_nm", "PSFxy_nm", "PSFxynm"))
-    if direct is not None:
-        return direct
-    psf_x = _first_optional_float(row, ("psf_x_nm", "PSFxnm"))
-    psf_y = _first_optional_float(row, ("psf_y_nm", "PSFynm"))
-    if psf_x is None:
-        return None
-    if psf_y is None:
-        psf_y = psf_x
-    return ((psf_x * psf_x + psf_y * psf_y) / 2.0) ** 0.5
 
 
 def _compact_fieldnames(source_fieldnames: list[str]) -> list[str]:

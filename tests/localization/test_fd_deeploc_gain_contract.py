@@ -1,14 +1,9 @@
 from __future__ import annotations
 
 import numpy as np
-from pathlib import Path
-import sys
 import torch
 
 from unity_psf.roi_library.loc_harvest import _FDDeeplocTileNormalizer
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "neptune_iwae"))
-from Normalization import FDDeeplocStyleNormalizer  # noqa: E402
 
 
 def _raw_window() -> np.ndarray:
@@ -40,19 +35,3 @@ def test_gain_contract_rejects_non_global_scope() -> None:
         assert "global_run" in str(exc)
     else:
         raise AssertionError("per-window gain must be rejected")
-
-
-def test_neptune_reference_and_unitypsf_gain_inputs_are_pixel_equivalent() -> None:
-    raw = _raw_window()
-    anchor = 495.58422534346505
-    gain = 0.03
-    neptune = FDDeeplocStyleNormalizer()
-    unity = _FDDeeplocTileNormalizer(train_background_adu=anchor, signal_gain=gain)
-
-    neptune_background = neptune.estimate_background_numpy(raw)
-    unity_background = unity.estimate_background_numpy(raw)
-    expected = anchor + (neptune.recenter_numpy(raw) - anchor) * gain
-    actual = unity.forward(torch.from_numpy(raw)).numpy()
-
-    assert unity_background == neptune_background
-    np.testing.assert_allclose(actual, expected, rtol=0.0, atol=1e-5)

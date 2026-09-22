@@ -1,0 +1,141 @@
+{
+  "schema_version": "unitypsf_v2_cuda_zmap_benchmark.v1",
+  "formal_gpu_run": true,
+  "simulation_backend": "cuda_gemm",
+  "simulation_backend_effective": "cuda_extension_per_emitter_zernike_map_psf",
+  "cuda_kernel_variant": "phase_factored_v2",
+  "frames": 10000,
+  "roi_shape_yx": [
+    64,
+    64
+  ],
+  "npupil_shape_yx": [
+    64,
+    64
+  ],
+  "psf_size": 21,
+  "density_um2": 1.0,
+  "pixel_size_nm": 125.211897,
+  "area_um2": 64.21716643978694,
+  "expected_emitters_per_frame": 64.21716643978694,
+  "actual_emitters_total": 641714,
+  "actual_emitters_mean_per_frame": 64.1714,
+  "actual_emitters_min_max": [
+    38,
+    95
+  ],
+  "z_range_um": [
+    -0.6,
+    0.6
+  ],
+  "photon_mean_sigma": [
+    20000.0,
+    1000.0
+  ],
+  "map_npz": "/home/guest/Others/main/race/results/microtube_right_benchmark_20260711/calibration/right_fd_zmap/export_nat_zmap/preferred_full_roi_zernike_maps_nm.npz",
+  "map_sha256": "187d87ec3e3e7347f22253d2333bd170c6bdaac13d2b8b74c52b0547d0d7bfa5",
+  "map_original_shape": [
+    13,
+    1200,
+    600
+  ],
+  "map_crop_origin_xy": [
+    268,
+    568
+  ],
+  "map_crop_shape": [
+    13,
+    64,
+    64
+  ],
+  "mode_order": [
+    [
+      2,
+      -2
+    ],
+    [
+      2,
+      0
+    ],
+    [
+      2,
+      2
+    ],
+    [
+      3,
+      -3
+    ],
+    [
+      3,
+      -1
+    ],
+    [
+      3,
+      1
+    ],
+    [
+      3,
+      3
+    ],
+    [
+      4,
+      -2
+    ],
+    [
+      4,
+      0
+    ],
+    [
+      4,
+      2
+    ],
+    [
+      5,
+      -1
+    ],
+    [
+      5,
+      1
+    ],
+    [
+      6,
+      0
+    ]
+  ],
+  "seed": 20260922,
+  "batch_size": 4096,
+  "frame_block": 64,
+  "gpu": "NVIDIA GeForce RTX 3090",
+  "cuda_version": "11.8",
+  "torch_version": "2.7.1+cu118",
+  "cuda_capability": [
+    8,
+    6
+  ],
+  "timing_seconds": {
+    "event_generation_cpu": 0.030358912888914347,
+    "renderer_setup": 0.31266977288760245,
+    "cuda_extension_warmup_and_build": 2.0969158289954066,
+    "measured_simulation_wall": 3.0334619330242276,
+    "measured_block_wall_sum": 2.98156393552199,
+    "measured_gpu_psf_path_sum": 2.8884849462509155,
+    "measured_gpu_psf_sum": 2.8884849462509155,
+    "measured_gpu_render_kernel_sum": 2.752724769592285,
+    "measured_gpu_subpixel_shift_sum": 0.11923792049288749,
+    "measured_gpu_postprocess_sum": 0.01251615971326828,
+    "measured_gpu_frame_reduction_sum": 0.009875871937721967,
+    "measured_host_copy_sum": 0.029845897806808352,
+    "tiff_write": 0.4094825510401279,
+    "end_to_end_including_setup_warmup_write": 5.852530085947365
+  },
+  "throughput": {
+    "frames_per_second_measured": 3296.563537235637,
+    "emitters_per_second_measured": 211545.09737336295,
+    "ms_per_frame_measured": 0.30334619330242274,
+    "ms_per_emitter_measured": 0.0047271244402089215
+  },
+  "output": {
+    "frames_tiff": "/home/guest/Others/main/race/results/microtube/unitypsf_v2_cuda_zmap_density1_roi64_npupil64_10k_phasefactored/frames.tif",
+    "timing_blocks_csv": "/home/guest/Others/main/race/results/microtube/unitypsf_v2_cuda_zmap_density1_roi64_npupil64_10k_phasefactored/timing_blocks.csv"
+  }
+}

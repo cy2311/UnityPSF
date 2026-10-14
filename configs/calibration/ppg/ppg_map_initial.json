@@ -1,0 +1,110 @@
+{
+  "schema": "ppg.beads_gamma36_manifest.v1",
+  "method": "4 PCA modes x 9 degree-2 2D Legendre basis functions",
+  "gamma_parameter_count": 36,
+  "psf_support_px": 21,
+  "calibration_only_nuisance_parameters_per_bead": 4,
+  "holdout_protocol": "five fixed spatial beads excluded from alignment reference, PCA, gamma, and gate; only evaluation-time xy nuisance fitted",
+  "gate": "reject median leave-one-out NCC < 0.85, excessive affine-z shift, or robust Poisson deviance outlier when NCC < 0.90",
+  "boundary_regularization": "16 density-weighted boundary anchors shrink sparse edges toward the median PCA score of the 8 nearest center-FOV accepted beads",
+  "boundary_anchor_strength": 1.0,
+  "gamma_ridge": 0.01,
+  "input_bead_count": 51,
+  "accepted_training_count": 43,
+  "accepted_training_bead_ids": [
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    10,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    30,
+    31,
+    33,
+    34,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41,
+    42,
+    45,
+    47,
+    48,
+    49,
+    50,
+    51,
+    52,
+    56
+  ],
+  "rejected_training_bead_ids": [
+    1,
+    28,
+    46
+  ],
+  "heldout_bead_ids": [
+    11,
+    43,
+    44,
+    53,
+    54
+  ],
+  "heldout_positions_xy_normalized": [
+    [
+      0.4734375,
+      0.4546875
+    ],
+    [
+      0.2171875,
+      0.7609375
+    ],
+    [
+      0.1125,
+      0.2
+    ],
+    [
+      0.8625,
+      0.85625
+    ],
+    [
+      0.825,
+      0.10625
+    ]
+  ],
+  "heldout_ncc_per_bead": {
+    "11": 0.9915497785718755,
+    "43": 0.981299124987833,
+    "44": 0.9620193784933778,
+    "53": 0.9807483379729333,
+    "54": 0.9699380691780911
+  },
+  "heldout_ncc_median": 0.9807483379729333,
+  "heldout_ncc_min": 0.9620193784933778,
+  "poisson_deviance_per_photon_threshold": 0.34369924468526514,
+  "grid_size": 40,
+  "artifact": "/home/guest/Others/main/race/unity_v0.3/configs/calibration/ppg/ppg_map_initial.npz",
+  "source_tiff": "/share/home/guest/race/datasets/zeiss_20260820/63x1.4_642.tif",
+  "source_tiff_sha256": "a13444e5c0d36dff993d916802862d817ac62a08edb1c6b34bc2f0c3e0f84ed0",
+  "bead_catalog": "/home/guest/Others/main/race/unity_v0.3/configs/calibration/ppg/bead_catalog_zeiss_63x1.4_642.npz",
+  "bead_catalog_sha256": "b7b131cea9d1fb01c95c31a82a592566b6c5914bd892efc60d8917eeda93e4f6",
+  "status": "approved_default"
+}

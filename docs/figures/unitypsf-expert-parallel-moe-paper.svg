@@ -1,0 +1,380 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title desc">
+  <title id="title">UnityPSF modality-routed expert-parallel PSF localization</title>
+  <desc id="desc">A publication-style scientific figure showing axial PSF manifolds, deterministic modality and channel routing, complete experts placed on independent GPUs, sparse conditional parameter activation, and a joint checkpoint indexing independent expert states.</desc>
+  <defs>
+    <filter id="blur3" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="3.2"/>
+    </filter>
+    <filter id="blur5" x="-70%" y="-70%" width="240%" height="240%">
+      <feGaussianBlur stdDeviation="4.8"/>
+    </filter>
+    <marker id="arrow-dark" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L8 4L0 8Z" fill="#475251"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0L8 4L0 8Z" fill="#3b7d6d"/>
+    </marker>
+    <style>
+      .t { font-family: 'Liberation Sans', 'Noto Sans CJK SC', sans-serif; fill: #202625; }
+      .title { font-size: 29px; font-weight: 700; }
+      .subtitle { font-size: 15px; font-weight: 400; fill: #5e6866; }
+      .panel-letter { font-size: 22px; font-weight: 700; }
+      .panel-title { font-size: 17px; font-weight: 700; }
+      .label { font-size: 13px; font-weight: 700; }
+      .body { font-size: 12px; font-weight: 400; fill: #4d5755; }
+      .small { font-size: 10.5px; font-weight: 400; fill: #697371; }
+      .tiny { font-size: 9px; font-weight: 400; fill: #77817f; }
+      .mono { font-family: 'Liberation Mono', monospace; font-size: 10.5px; fill: #46504e; }
+      .rule { stroke: #cdd3d1; stroke-width: 1; }
+      .light-rule { stroke: #e2e6e5; stroke-width: 1; }
+      .arrow { fill: none; stroke: #475251; stroke-width: 1.35; marker-end: url(#arrow-dark); }
+      .green-arrow { fill: none; stroke: #3b7d6d; stroke-width: 1.7; marker-end: url(#arrow-green); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1080" fill="#ffffff"/>
+
+  <text class="t title" x="54" y="47">UnityPSF couples modality-routed conditional localization with expert-parallel training</text>
+  <text class="t subtitle" x="54" y="75">One PSF sample activates one complete expert; one distributed job updates all PSF families concurrently.</text>
+  <line class="rule" x1="54" y1="94" x2="1746" y2="94"/>
+
+  <!-- Panel a: scientific evidence objects -->
+  <text class="t panel-letter" x="54" y="132">a</text>
+  <text class="t panel-title" x="86" y="132">Distinct PSF families occupy distinct axial image manifolds</text>
+  <line class="light-rule" x1="54" y1="147" x2="586" y2="147"/>
+
+  <text class="t small" x="181" y="171" text-anchor="middle">−600</text>
+  <text class="t small" x="257" y="171" text-anchor="middle">−300</text>
+  <text class="t small" x="333" y="171" text-anchor="middle">0</text>
+  <text class="t small" x="409" y="171" text-anchor="middle">+300</text>
+  <text class="t small" x="485" y="171" text-anchor="middle">+600 nm</text>
+  <line x1="172" y1="183" x2="494" y2="183" stroke="#9ba4a2" stroke-width="1"/>
+  <line x1="181" y1="178" x2="181" y2="188" stroke="#9ba4a2"/>
+  <line x1="257" y1="178" x2="257" y2="188" stroke="#9ba4a2"/>
+  <line x1="333" y1="178" x2="333" y2="188" stroke="#9ba4a2"/>
+  <line x1="409" y1="178" x2="409" y2="188" stroke="#9ba4a2"/>
+  <line x1="485" y1="178" x2="485" y2="188" stroke="#9ba4a2"/>
+  <text class="t small" x="527" y="187">z</text>
+
+  <!-- 2D strip -->
+  <text class="t label" x="64" y="241" fill="#3b7d6d">2D emitter</text>
+  <g>
+    <rect x="151" y="201" width="60" height="60" fill="#111817"/>
+    <rect x="227" y="201" width="60" height="60" fill="#111817"/>
+    <rect x="303" y="201" width="60" height="60" fill="#111817"/>
+    <rect x="379" y="201" width="60" height="60" fill="#111817"/>
+    <rect x="455" y="201" width="60" height="60" fill="#111817"/>
+    <circle cx="181" cy="231" r="10" fill="#74b09f" opacity="0.75" filter="url(#blur5)"/>
+    <circle cx="181" cy="231" r="4.5" fill="#c9e7de"/>
+    <circle cx="257" cy="231" r="10" fill="#74b09f" opacity="0.75" filter="url(#blur5)"/>
+    <circle cx="257" cy="231" r="4.5" fill="#c9e7de"/>
+    <circle cx="333" cy="231" r="10" fill="#74b09f" opacity="0.75" filter="url(#blur5)"/>
+    <circle cx="333" cy="231" r="4.5" fill="#c9e7de"/>
+    <circle cx="409" cy="231" r="10" fill="#74b09f" opacity="0.75" filter="url(#blur5)"/>
+    <circle cx="409" cy="231" r="4.5" fill="#c9e7de"/>
+    <circle cx="485" cy="231" r="10" fill="#74b09f" opacity="0.75" filter="url(#blur5)"/>
+    <circle cx="485" cy="231" r="4.5" fill="#c9e7de"/>
+  </g>
+
+  <!-- Astig strip -->
+  <text class="t label" x="64" y="331" fill="#4d6f91">Astigmatic</text>
+  <g>
+    <rect x="151" y="291" width="60" height="60" fill="#111817"/>
+    <rect x="227" y="291" width="60" height="60" fill="#111817"/>
+    <rect x="303" y="291" width="60" height="60" fill="#111817"/>
+    <rect x="379" y="291" width="60" height="60" fill="#111817"/>
+    <rect x="455" y="291" width="60" height="60" fill="#111817"/>
+    <ellipse cx="181" cy="321" rx="20" ry="6" fill="#8cb0d0" opacity="0.80" filter="url(#blur3)"/>
+    <ellipse cx="181" cy="321" rx="14" ry="3.5" fill="#d9e8f4"/>
+    <ellipse cx="257" cy="321" rx="15" ry="8" fill="#8cb0d0" opacity="0.80" filter="url(#blur3)"/>
+    <ellipse cx="257" cy="321" rx="9" ry="5" fill="#d9e8f4"/>
+    <circle cx="333" cy="321" r="10" fill="#8cb0d0" opacity="0.80" filter="url(#blur3)"/>
+    <circle cx="333" cy="321" r="5" fill="#d9e8f4"/>
+    <ellipse cx="409" cy="321" rx="8" ry="15" fill="#8cb0d0" opacity="0.80" filter="url(#blur3)"/>
+    <ellipse cx="409" cy="321" rx="5" ry="9" fill="#d9e8f4"/>
+    <ellipse cx="485" cy="321" rx="6" ry="20" fill="#8cb0d0" opacity="0.80" filter="url(#blur3)"/>
+    <ellipse cx="485" cy="321" rx="3.5" ry="14" fill="#d9e8f4"/>
+  </g>
+
+  <!-- DH strip -->
+  <text class="t label" x="64" y="421" fill="#a05a49">Double helix</text>
+  <g>
+    <rect x="151" y="381" width="60" height="60" fill="#111817"/>
+    <rect x="227" y="381" width="60" height="60" fill="#111817"/>
+    <rect x="303" y="381" width="60" height="60" fill="#111817"/>
+    <rect x="379" y="381" width="60" height="60" fill="#111817"/>
+    <rect x="455" y="381" width="60" height="60" fill="#111817"/>
+    <g transform="rotate(-58 181 411)">
+      <circle cx="169" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="193" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="169" cy="411" r="4" fill="#f2c6b9"/><circle cx="193" cy="411" r="4" fill="#f2c6b9"/>
+    </g>
+    <g transform="rotate(-30 257 411)">
+      <circle cx="245" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="269" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="245" cy="411" r="4" fill="#f2c6b9"/><circle cx="269" cy="411" r="4" fill="#f2c6b9"/>
+    </g>
+    <circle cx="321" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+    <circle cx="345" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+    <circle cx="321" cy="411" r="4" fill="#f2c6b9"/><circle cx="345" cy="411" r="4" fill="#f2c6b9"/>
+    <g transform="rotate(30 409 411)">
+      <circle cx="397" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="421" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="397" cy="411" r="4" fill="#f2c6b9"/><circle cx="421" cy="411" r="4" fill="#f2c6b9"/>
+    </g>
+    <g transform="rotate(58 485 411)">
+      <circle cx="473" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="497" cy="411" r="8" fill="#cf8874" opacity="0.78" filter="url(#blur3)"/>
+      <circle cx="473" cy="411" r="4" fill="#f2c6b9"/><circle cx="497" cy="411" r="4" fill="#f2c6b9"/>
+    </g>
+  </g>
+
+  <line class="light-rule" x1="64" y1="466" x2="566" y2="466"/>
+  <circle cx="78" cy="487" r="4" fill="#3b7d6d"/><circle cx="92" cy="487" r="4" fill="#3b7d6d" opacity="0.62"/><circle cx="106" cy="487" r="4" fill="#3b7d6d" opacity="0.32"/>
+  <text class="t small" x="120" y="491">multiple samples per family</text>
+  <line x1="274" y1="487" x2="313" y2="487" stroke="#6d7775" stroke-width="2"/>
+  <circle cx="293" cy="487" r="5" fill="#ffffff" stroke="#6d7775" stroke-width="1.5"/>
+  <text class="t small" x="326" y="491">sample-specific calibration</text>
+  <path d="M500 480 A12 12 0 1 1 499 495" fill="none" stroke="#a05a49" stroke-width="1.5" marker-end="url(#arrow-dark)"/>
+  <text class="t small" x="526" y="491">DH angle–z anchor</text>
+
+  <!-- Panel b: dominant method region -->
+  <text class="t panel-letter" x="620" y="132">b</text>
+  <text class="t panel-title" x="652" y="132">Static modality routing places complete localization experts on independent GPUs</text>
+  <line class="light-rule" x1="620" y1="147" x2="1746" y2="147"/>
+
+  <!-- Router spine -->
+  <text class="t small" x="646" y="177">sample metadata</text>
+  <path d="M698 188 L698 451" stroke="#8e9896" stroke-width="1.2"/>
+  <circle cx="698" cy="226" r="8" fill="#3b7d6d"/>
+  <circle cx="698" cy="326" r="8" fill="#4d6f91"/>
+  <circle cx="698" cy="426" r="8" fill="#a05a49"/>
+  <path d="M698 188 L730 188 L730 164" fill="none" stroke="#8e9896" stroke-width="1"/>
+  <text class="t mono" x="746" y="169">r(modality, channel)</text>
+  <text class="t small" x="746" y="187">deterministic hard route · zero trainable gate parameters</text>
+
+  <!-- rank 0 lane -->
+  <path d="M706 226 L1698 226" stroke="#3b7d6d" stroke-width="2"/>
+  <text class="t label" x="730" y="216" fill="#3b7d6d">rank 0 · GPU 0</text>
+  <text class="t small" x="730" y="244">2D emitter · main</text>
+  <g transform="translate(884 195)">
+    <rect x="0" y="15" width="34" height="34" fill="#edf2f0" stroke="#8f9a97"/>
+    <rect x="10" y="9" width="34" height="34" fill="#e3ebe8" stroke="#75827f"/>
+    <rect x="20" y="3" width="34" height="34" fill="#d7e5e1" stroke="#596663"/>
+  </g>
+  <text class="t small" x="911" y="259" text-anchor="middle">preprocess</text>
+  <path class="arrow" d="M950 226 L993 226"/>
+  <g transform="translate(1006 193)">
+    <path d="M0 8 L39 0 L39 58 L0 50Z" fill="#f3f5f4" stroke="#5f6a68"/>
+    <path d="M45 5 L91 13 L91 45 L45 55Z" fill="#e7eeec" stroke="#5f6a68"/>
+    <path d="M97 13 L142 20 L142 38 L97 45Z" fill="#d5e4e0" stroke="#5f6a68"/>
+  </g>
+  <text class="t small" x="1077" y="266" text-anchor="middle">full DoubleUNet</text>
+  <path d="M1131 187 L1131 206" stroke="#3b7d6d" stroke-width="1.3" marker-end="url(#arrow-green)"/>
+  <circle cx="1117" cy="177" r="4" fill="#3b7d6d"/><circle cx="1131" cy="177" r="4" fill="#3b7d6d" opacity="0.7"/><circle cx="1145" cy="177" r="4" fill="#3b7d6d" opacity="0.4"/>
+  <text class="t tiny" x="1156" y="181">FiLM conditions</text>
+  <path class="arrow" d="M1158 226 L1203 226"/>
+  <g transform="translate(1218 200)">
+    <circle cx="8" cy="20" r="5" fill="#3b7d6d"/><circle cx="26" cy="9" r="4" fill="#3b7d6d" opacity="0.55"/><circle cx="42" cy="29" r="3" fill="#3b7d6d" opacity="0.35"/>
+    <line x1="0" y1="42" x2="56" y2="42" stroke="#818b89"/>
+  </g>
+  <text class="t small" x="1246" y="266" text-anchor="middle">2D localization</text>
+  <text class="t body" x="1340" y="214">complete expert</text>
+  <text class="t small" x="1340" y="235">0.47M parameters · independent optimizer</text>
+  <line x1="1582" y1="204" x2="1582" y2="248" stroke="#c0c7c5"/>
+  <text class="t label" x="1603" y="216">z = 0</text>
+  <text class="t small" x="1603" y="238">z_valid = false</text>
+
+  <!-- rank 1 lane -->
+  <path d="M706 326 L1698 326" stroke="#4d6f91" stroke-width="2"/>
+  <text class="t label" x="730" y="316" fill="#4d6f91">rank 1 · GPU 1</text>
+  <text class="t small" x="730" y="344">astigmatism · left / right</text>
+  <g transform="translate(884 295)">
+    <rect x="0" y="15" width="34" height="34" fill="#edf0f3" stroke="#8f9a97"/>
+    <rect x="10" y="9" width="34" height="34" fill="#e3e9ef" stroke="#75827f"/>
+    <rect x="20" y="3" width="34" height="34" fill="#d8e3ed" stroke="#596663"/>
+  </g>
+  <text class="t small" x="911" y="359" text-anchor="middle">channel crop</text>
+  <path class="arrow" d="M950 326 L993 326"/>
+  <g transform="translate(1006 293)">
+    <path d="M0 8 L39 0 L39 58 L0 50Z" fill="#f3f5f6" stroke="#5f6a68"/>
+    <path d="M45 5 L91 13 L91 45 L45 55Z" fill="#e7ebef" stroke="#5f6a68"/>
+    <path d="M97 13 L142 20 L142 38 L97 45Z" fill="#d8e3ed" stroke="#5f6a68"/>
+  </g>
+  <text class="t small" x="1077" y="366" text-anchor="middle">full DoubleUNet × 2</text>
+  <path d="M1131 287 L1131 306" stroke="#4d6f91" stroke-width="1.3" marker-end="url(#arrow-dark)"/>
+  <circle cx="1117" cy="277" r="4" fill="#4d6f91"/><circle cx="1131" cy="277" r="4" fill="#4d6f91" opacity="0.7"/><circle cx="1145" cy="277" r="4" fill="#4d6f91" opacity="0.4"/>
+  <text class="t tiny" x="1156" y="281">independent FiLM</text>
+  <path class="arrow" d="M1158 326 L1203 326"/>
+  <g transform="translate(1218 300)">
+    <line x1="0" y1="42" x2="56" y2="42" stroke="#818b89"/>
+    <circle cx="12" cy="25" r="4" fill="#4d6f91"/><circle cx="30" cy="14" r="4" fill="#4d6f91" opacity="0.66"/><circle cx="44" cy="31" r="4" fill="#4d6f91" opacity="0.42"/>
+  </g>
+  <text class="t small" x="1246" y="366" text-anchor="middle">x / y / z</text>
+  <text class="t body" x="1340" y="314">two channel instances</text>
+  <text class="t small" x="1340" y="335">2 × 0.47M · independent zmap / gamma</text>
+  <line x1="1582" y1="304" x2="1582" y2="348" stroke="#c0c7c5"/>
+  <circle cx="1609" cy="316" r="6" fill="#4d6f91"/><text class="t small" x="1623" y="320">left</text>
+  <circle cx="1609" cy="338" r="6" fill="#4d6f91" opacity="0.52"/><text class="t small" x="1623" y="342">right</text>
+
+  <!-- rank 2 lane -->
+  <path d="M706 426 L1698 426" stroke="#a05a49" stroke-width="2"/>
+  <text class="t label" x="730" y="416" fill="#a05a49">rank 2 · GPU 2</text>
+  <text class="t small" x="730" y="444">double helix · left / right</text>
+  <g transform="translate(884 395)">
+    <rect x="0" y="15" width="34" height="34" fill="#f3efed" stroke="#8f9a97"/>
+    <rect x="10" y="9" width="34" height="34" fill="#eee3df" stroke="#75827f"/>
+    <rect x="20" y="3" width="34" height="34" fill="#ead8d2" stroke="#596663"/>
+  </g>
+  <text class="t small" x="911" y="459" text-anchor="middle">channel crop</text>
+  <path class="arrow" d="M950 426 L993 426"/>
+  <g transform="translate(1006 393)">
+    <path d="M0 8 L39 0 L39 58 L0 50Z" fill="#f5f3f2" stroke="#5f6a68"/>
+    <path d="M45 5 L91 13 L91 45 L45 55Z" fill="#eee7e4" stroke="#5f6a68"/>
+    <path d="M97 13 L142 20 L142 38 L97 45Z" fill="#ead8d2" stroke="#5f6a68"/>
+  </g>
+  <text class="t small" x="1077" y="466" text-anchor="middle">full DoubleUNet × 2</text>
+  <path d="M1131 387 L1131 406" stroke="#a05a49" stroke-width="1.3" marker-end="url(#arrow-dark)"/>
+  <circle cx="1117" cy="377" r="4" fill="#a05a49"/><circle cx="1131" cy="377" r="4" fill="#a05a49" opacity="0.7"/><circle cx="1145" cy="377" r="4" fill="#a05a49" opacity="0.4"/>
+  <text class="t tiny" x="1156" y="381">FiLM + DH anchor</text>
+  <path class="arrow" d="M1158 426 L1203 426"/>
+  <g transform="translate(1218 400)">
+    <line x1="4" y1="42" x2="56" y2="42" stroke="#818b89"/>
+    <g transform="rotate(28 28 22)"><circle cx="18" cy="22" r="6" fill="#a05a49"/><circle cx="39" cy="22" r="6" fill="#a05a49" opacity="0.58"/></g>
+    <path d="M49 8 A18 18 0 0 1 57 26" fill="none" stroke="#a05a49" stroke-width="1.2"/>
+  </g>
+  <text class="t small" x="1246" y="466" text-anchor="middle">x / y / z + geometry</text>
+  <text class="t body" x="1340" y="414">two channel instances</text>
+  <text class="t small" x="1340" y="435">2 × 0.47–0.50M · sample calibration</text>
+  <line x1="1582" y1="404" x2="1582" y2="448" stroke="#c0c7c5"/>
+  <circle cx="1609" cy="416" r="6" fill="#a05a49"/><text class="t small" x="1623" y="420">left</text>
+  <circle cx="1609" cy="438" r="6" fill="#a05a49" opacity="0.52"/><text class="t small" x="1623" y="442">right</text>
+
+  <path d="M860 479 L860 492 L1303 492 L1303 479" fill="none" stroke="#969f9d" stroke-width="1"/>
+  <text class="t small" x="1081" y="508" text-anchor="middle">No shared backbone or cross-expert gradient; synchronization occurs only at epoch and checkpoint boundaries.</text>
+
+  <!-- Panel c: sparse route matrix and parameters -->
+  <text class="t panel-letter" x="54" y="570">c</text>
+  <text class="t panel-title" x="86" y="570">Routing is sparse per sample, not across the distributed training job</text>
+  <line class="light-rule" x1="54" y1="585" x2="874" y2="585"/>
+
+  <text class="t small" x="80" y="620">route key</text>
+  <text class="t small" x="318" y="620" text-anchor="middle">expert instance selected by r(modality, channel)</text>
+
+  <!-- Matrix labels -->
+  <text class="t tiny" x="198" y="650" text-anchor="middle">2D-M</text>
+  <text class="t tiny" x="246" y="650" text-anchor="middle">A-L</text>
+  <text class="t tiny" x="294" y="650" text-anchor="middle">A-R</text>
+  <text class="t tiny" x="342" y="650" text-anchor="middle">DH-L</text>
+  <text class="t tiny" x="390" y="650" text-anchor="middle">DH-R</text>
+  <text class="t small" x="80" y="681">2D · main</text>
+  <text class="t small" x="80" y="729">Astig · left</text>
+  <text class="t small" x="80" y="777">Astig · right</text>
+  <text class="t small" x="80" y="825">DH · left</text>
+  <text class="t small" x="80" y="873">DH · right</text>
+  <rect x="174" y="660" width="240" height="240" fill="#fafbfb" stroke="#cfd5d3"/>
+  <path d="M222 660V900M270 660V900M318 660V900M366 660V900M174 708H414M174 756H414M174 804H414M174 852H414" stroke="#e0e5e3"/>
+  <rect x="184" y="670" width="28" height="28" fill="#3b7d6d"/>
+  <rect x="232" y="718" width="28" height="28" fill="#4d6f91"/>
+  <rect x="280" y="766" width="28" height="28" fill="#4d6f91" opacity="0.64"/>
+  <rect x="328" y="814" width="28" height="28" fill="#a05a49"/>
+  <rect x="376" y="862" width="28" height="28" fill="#a05a49" opacity="0.64"/>
+  <text class="t small" x="174" y="924">one non-zero decision per channel sample</text>
+
+  <line x1="456" y1="625" x2="456" y2="924" stroke="#d4d9d7"/>
+  <text class="t label" x="490" y="651">Activated parameters</text>
+  <text class="t small" x="490" y="674">five trained instances in the final bundle</text>
+
+  <text class="t small" x="490" y="721">stored</text>
+  <rect x="568" y="704" width="244" height="22" fill="#e5e9e8"/>
+  <rect x="568" y="704" width="244" height="22" fill="#6e7977" opacity="0.78"/>
+  <text class="t label" x="820" y="721">2.35–2.45M</text>
+  <text class="t small" x="490" y="777">one channel</text>
+  <rect x="568" y="760" width="244" height="22" fill="#e5e9e8"/>
+  <rect x="568" y="760" width="49" height="22" fill="#3b7d6d"/>
+  <text class="t label" x="625" y="777" fill="#3b7d6d">0.47–0.50M · 20%</text>
+  <text class="t small" x="490" y="833">dual channel</text>
+  <rect x="568" y="816" width="244" height="22" fill="#e5e9e8"/>
+  <rect x="568" y="816" width="98" height="22" fill="#3b7d6d" opacity="0.72"/>
+  <text class="t label" x="674" y="833" fill="#3b7d6d">0.94–1.00M · 40%</text>
+
+  <path d="M490 872 C574 906 718 906 812 872" fill="none" stroke="#9aa3a1" stroke-width="1.1"/>
+  <text class="t small" x="651" y="903" text-anchor="middle">all three ranks may compute concurrently,</text>
+  <text class="t small" x="651" y="919" text-anchor="middle">while each sample remains conditionally sparse</text>
+
+  <!-- Panel d: joint checkpoint lineage -->
+  <text class="t panel-letter" x="914" y="570">d</text>
+  <text class="t panel-title" x="946" y="570">One logical checkpoint indexes independent expert and physical states</text>
+  <line class="light-rule" x1="914" y1="585" x2="1746" y2="585"/>
+
+  <!-- Manifest -->
+  <path d="M952 651 H1082 L1104 673 V824 H952 Z" fill="#f7f8f8" stroke="#596361" stroke-width="1.2"/>
+  <path d="M1082 651 V673 H1104" fill="none" stroke="#596361"/>
+  <text class="t label" x="1028" y="695" text-anchor="middle">manifest.json</text>
+  <line x1="976" y1="711" x2="1080" y2="711" stroke="#c9cfcd"/>
+  <text class="t mono" x="976" y="736">epoch / steps</text>
+  <text class="t mono" x="976" y="758">rank map</text>
+  <text class="t mono" x="976" y="780">artifact hashes</text>
+  <text class="t mono" x="976" y="802">status: complete</text>
+
+  <!-- Connections -->
+  <path d="M1104 704 C1160 674 1192 671 1233 671" fill="none" stroke="#3b7d6d" stroke-width="1.4"/>
+  <path d="M1104 724 C1162 718 1190 724 1233 724" fill="none" stroke="#4d6f91" stroke-width="1.4"/>
+  <path d="M1104 744 C1162 744 1190 777 1233 777" fill="none" stroke="#4d6f91" stroke-width="1.4" opacity="0.64"/>
+  <path d="M1104 764 C1162 770 1190 830 1233 830" fill="none" stroke="#a05a49" stroke-width="1.4"/>
+  <path d="M1104 784 C1162 798 1190 883 1233 883" fill="none" stroke="#a05a49" stroke-width="1.4" opacity="0.64"/>
+
+  <!-- Shards -->
+  <g>
+    <path d="M1233 644 H1399 L1417 662 V698 H1233 Z" fill="#f6faf8" stroke="#3b7d6d"/>
+    <path d="M1399 644 V662 H1417" fill="none" stroke="#3b7d6d"/>
+    <text class="t label" x="1251" y="667" fill="#3b7d6d">Emitter · main</text>
+    <text class="t small" x="1251" y="687">rank 0 · model / AdamW / step</text>
+
+    <path d="M1233 697 H1399 L1417 715 V751 H1233 Z" fill="#f6f8fa" stroke="#4d6f91"/>
+    <path d="M1399 697 V715 H1417" fill="none" stroke="#4d6f91"/>
+    <text class="t label" x="1251" y="720" fill="#4d6f91">Astig · left</text>
+    <text class="t small" x="1251" y="740">rank 1 · independent zmap / gamma</text>
+
+    <path d="M1233 750 H1399 L1417 768 V804 H1233 Z" fill="#f6f8fa" stroke="#4d6f91" opacity="0.82"/>
+    <path d="M1399 750 V768 H1417" fill="none" stroke="#4d6f91"/>
+    <text class="t label" x="1251" y="773" fill="#4d6f91">Astig · right</text>
+    <text class="t small" x="1251" y="793">rank 1 · independent zmap / gamma</text>
+
+    <path d="M1233 803 H1399 L1417 821 V857 H1233 Z" fill="#fbf7f5" stroke="#a05a49"/>
+    <path d="M1399 803 V821 H1417" fill="none" stroke="#a05a49"/>
+    <text class="t label" x="1251" y="826" fill="#a05a49">DH · left</text>
+    <text class="t small" x="1251" y="846">rank 2 · calibration / physical state</text>
+
+    <path d="M1233 856 H1399 L1417 874 V910 H1233 Z" fill="#fbf7f5" stroke="#a05a49" opacity="0.82"/>
+    <path d="M1399 856 V874 H1417" fill="none" stroke="#a05a49"/>
+    <text class="t label" x="1251" y="879" fill="#a05a49">DH · right</text>
+    <text class="t small" x="1251" y="899">rank 2 · calibration / physical state</text>
+  </g>
+
+  <path class="green-arrow" d="M1439 777 L1510 777"/>
+  <text class="t small" x="1474" y="762" text-anchor="middle">selective load</text>
+  <rect x="1523" y="716" width="195" height="122" fill="#fbfcfc" stroke="#aeb7b5"/>
+  <g transform="rotate(25 1576 763)">
+    <circle cx="1567" cy="763" r="8" fill="#a05a49"/><circle cx="1585" cy="763" r="8" fill="#a05a49" opacity="0.58"/>
+  </g>
+  <path d="M1607 765 L1647 765" stroke="#666f6d" marker-end="url(#arrow-dark)"/>
+  <circle cx="1670" cy="756" r="3" fill="#a05a49"/><circle cx="1684" cy="773" r="3" fill="#a05a49" opacity="0.62"/>
+  <text class="t label" x="1620" y="808" text-anchor="middle">DH-right inference</text>
+  <text class="t small" x="1620" y="827" text-anchor="middle">loads one shard only</text>
+
+  <line class="light-rule" x1="952" y1="936" x2="1718" y2="936"/>
+  <text class="t small" x="952" y="961">model-only bundle</text>
+  <text class="t label" x="1060" y="961">≈ 10 MiB</text>
+  <text class="t small" x="1190" y="961">full training resume</text>
+  <text class="t label" x="1310" y="961">≈ 30 MiB</text>
+  <text class="t small" x="1471" y="961">checkpoint commit</text>
+  <text class="t label" x="1590" y="961">epoch barrier + hashes</text>
+
+  <line class="rule" x1="54" y1="1010" x2="1746" y2="1010"/>
+  <text class="t label" x="54" y="1038">Supported:</text>
+  <text class="t body" x="125" y="1038">modality-routed hard MoE, expert-parallel training, channel-isolated scientific states.</text>
+  <text class="t label" x="985" y="1038">Not claimed:</text>
+  <text class="t body" x="1073" y="1038">learned top-k routing, shared-backbone sparsity, or cross-expert gradient coupling.</text>
+  <text class="t small" x="900" y="1065" text-anchor="middle">Per-sample conditional computation preserves PSF-specific physics while a single distributed run trains all supported modalities.</text>
+</svg>

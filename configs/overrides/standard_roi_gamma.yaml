@@ -1,0 +1,66 @@
+phase_retrieval:
+  input:
+    tiff_path: ${UNITYPSF_RAW_TIFF}
+train:
+  device: cuda:0
+  batch_size: 64
+  online_generation:
+    steps_per_epoch: 157
+    npupil: 64
+    vector_psf_size: 21
+    channels: 3
+    cached_window_cache_frames: 9984
+    condition_feature_dim: 13
+    condition_dim: 15
+    fixed_astig_anchor_nm: 100.0
+  eval:
+    enabled: true
+    source: online_generation
+    batch_count: 4
+    batch_size: 4
+    seed: 100000
+  nat_wake:
+    patch_size_px: 25
+    feedback_interval_steps: 417
+    gamma_init_anchor_nm: 100.0
+  real_tiff_wake:
+    tiff_path: ${UNITYPSF_RAW_TIFF}
+  roi_bank_gamma:
+    enabled: true
+    update_interval_epochs: 10
+    start_epoch: 30
+    output_dir: roi_bank_gamma_cuda_gemm
+    roi_bank_frame_range: [0, 100]
+    roi_groups_per_update: null
+    gamma_steps: 100
+    gamma_lr: 0.025
+    num_posterior_samples: 25
+    fixed_astig_anchor_nm: 100.0
+    roi_size_px: 96
+    roi_bank_valid_core_size_px: 96
+    roi_bank_origin_mode: sliding_window_guided
+    roi_bank_origin_stride_px: 88
+    roi_bank_spatial_tile_size: 64
+    roi_bank_spatial_overlap_px: 32
+    roi_bank_harvest_tile_size_px: 64
+    roi_bank_harvest_overlap_px: 32
+    roi_bank_tile_inference_enabled: true
+    roi_bank_tile_size_px: 64
+    roi_bank_tile_stride_px: 32
+    roi_bank_tile_core_size_px: 48
+    roi_bank_phot_min: 100.0
+    roi_bank_sigma_max_px: 2.5
+    posterior_probability_threshold: 0.7
+    posterior_adjacent_probability_threshold: 0.6
+    posterior_batch_size: 4
+    roi_bank_projection_emitter_chunk_size: 4096
+    roi_bank_projection_sample_batch_size: 128
+    auto_heldout_fraction: 0.1
+    auto_heldout_min_rois: 20
+    auto_heldout_max_rois: 20
+    auto_heldout_seed: 0
+    artifact_retention_policy: compact_latest
+    diagnostic_interval_updates: 10
+metadata:
+  training_mode: unitypsf_cuda_gemm_roi_gamma
+  source_reference: unitypsf_v0.3_formal_cuda_gemm_route

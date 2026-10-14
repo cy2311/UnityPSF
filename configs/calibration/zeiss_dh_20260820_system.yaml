@@ -1,0 +1,47 @@
+schema_version: unitypsf.physical_system.v1
+
+system_id: zeiss_dh_20260820
+modality: double_helix
+
+acquisition:
+  detector_shape_px: [1024, 1024]
+  pixel_size_nm_x: 62.605948528278615
+  pixel_size_nm_y: 62.605948528278615
+  field_of_view_um: [64.11, 64.11]
+  axes: TYX
+  dtype: uint16
+  exposure_time_ms: 50.0
+  acquisition_mode: TIRF_time_series
+
+optics:
+  objective: Plan-Apochromat 63x/1.46 Oil Korr M27 Var2
+  NA: 1.46
+  immersion_medium: oil
+  excitation:
+    wavelength_nm: 642.0
+    power_percent: 100.0
+  emission_filter: BP 570-620+LP 655
+  detection_wavelength_range_nm: [655.0, 1000.0]
+  filter_wheel: LBF 405/488/561/642
+
+physical_update:
+  execution: one_raw_tiff_per_physical_update_run
+  required_calibration:
+    emission_wavelength_nm: 655.0
+    camera_baseline_adu: 398.6
+    camera_e_per_adu: 1.020784562122306
+    camera_qe: 0.9
+    camera_read_sigma_adu: 0.0
+    sample_refractive_index: 1.33
+  calibration_provenance:
+    emission_wavelength_nm: zeiss_tiff_metadata
+    camera_baseline_adu: provisional_tcell_transfer
+    camera_e_per_adu: provisional_tcell_transfer
+    camera_qe: provisional_tcell_transfer
+    camera_read_sigma_adu: provisional_tcell_transfer
+    sample_refractive_index: provisional_tcell_transfer
+  notes:
+    - Pixel size is taken from TIFF ScalingX/ScalingY (6.2605948528278615e-8 m per px); the displayed 64.11 um field of view is rounded.
+    - Emission wavelength is taken from the TIFF metadata (655 nm), not the 642 nm excitation wavelength.
+    - Camera conversion, QE, read noise, and sample refractive index are temporary T-cell transfers pending a ZEISS camera calibration.
+    - Do not reuse the T-cell DH 207 nm/px geometry, NA 1.27, or physical state.

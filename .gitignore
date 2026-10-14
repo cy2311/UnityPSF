@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+.local/
+logs/
+output/
+datasets/
+artifacts/
+*.out
+*.err
+slurm-*.out
+
+# Source-tree runtime caches must never define the canonical package boundary.
+__pycache__/
+*.py[cod]

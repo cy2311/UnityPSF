@@ -1,0 +1,9 @@
+train:
+  max_batches: 10000
+  roi_bank_gamma:
+    start_batch: 2000
+    stop_batch: 10000
+    output_dir: roi_bank_gamma_batch_budget_start2000_lr025_steps100_batches10000
+metadata:
+  training_mode: neptune_v03_standard_roi_gamma_batch_budget_start2000_lr025_steps100_batches10000
+  standard_note: "Short batch-budget route: keep ROI128 training geometry; train for 10000 optimizer batches; start ROI gamma at batch 2000; schedule ROI gamma by global batch step every 500 batches."

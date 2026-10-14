@@ -1,0 +1,35 @@
+schema_version: unitypsf.joint_training.v1
+execution: expert_parallel
+rank_assignment: one_modality_per_rank
+epochs: 300
+instances:
+  - key: emitter_2d:left
+    config: project://configs/modalities/emitter_2d/emitter_2d_dual_channel_300epoch.yaml
+    model_seed: 4101
+    data_seed: 4111
+    step_budget: 417
+  - key: emitter_2d:right
+    config: project://configs/modalities/emitter_2d/emitter_2d_dual_channel_300epoch.yaml
+    model_seed: 4101
+    data_seed: 4112
+    step_budget: 417
+  - key: astigmatism:left
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4211
+    step_budget: 417
+  - key: astigmatism:right
+    config: project://configs/modalities/astigmatism/astigmatism_dual_channel_300epoch.yaml
+    model_seed: 4201
+    data_seed: 4212
+    step_budget: 417
+  - key: double_helix:main
+    config: project://configs/modalities/double_helix/double_helix_raw_tiff_300epoch.yaml
+    model_seed: 4301
+    data_seed: 4311
+    step_budget: 417
+metadata:
+  training_scope: three_modality_raw_tiff
+  supervision_source: prior_dh_simulation_direct_xyz
+  raw_tiff_frames: 75000
+  dh_gain: 0.03

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=nv04_std_rgb
+#SBATCH --partition=cpu1
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=30:00:00
+#SBATCH --output=logs/standard_roi_gamma_batch_budget_%j.out
+#SBATCH --error=logs/standard_roi_gamma_batch_budget_%j.err
+
+set -euo pipefail
+
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PYTHON_BIN="${PYTHON:-python}"
+RAW_TIFF="${UNITYPSF_RAW_TIFF:-/share/home/guest/race/datasets/samples/sample/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif}"
+
+cd "${PROJECT_ROOT}"
+export PYTHONPATH=src
+export MPLCONFIGDIR=.local/cache/matplotlib
+export UNITYPSF_RAW_TIFF="$RAW_TIFF"
+
+RUN_NAME="standard_roi_gamma_batch_budget_start2000_lr025_steps100_batches10000_${SLURM_JOB_ID:-local}"
+RUN_ROOT="output"
+RESOLVED_CONFIG=".local/tmp/standard/resolved_standard_roi_gamma_batch_budget_${SLURM_JOB_ID:-local}.yaml"
+
+mkdir -p .local/cache/matplotlib .local/tmp/standard logs "${RUN_ROOT}/${RUN_NAME}"
+
+"${PYTHON_BIN}" -m unity_psf.config.materialize \
+  --base configs/base/microtube.yaml \
+  --override configs/overrides/standard_roi_gamma.yaml \
+  --override configs/overrides/standard_roi_gamma_batch_budget.yaml \
+  --output "${RESOLVED_CONFIG}"
+
+"${PYTHON_BIN}" -u -m unity_psf.training.run_high_fidelity \
+  --config "${RESOLVED_CONFIG}" \
+  --run-root "${RUN_ROOT}" \
+  --run-name "${RUN_NAME}" \
+  --seed 0

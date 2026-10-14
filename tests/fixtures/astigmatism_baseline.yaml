@@ -1,0 +1,93 @@
+schema: unity_psf.baseline.v1
+
+model:
+  name: active_smlm_soft_moe_double_unet
+  params:
+    nch_in: 3
+    condition_dim: 4
+    domain_count: 2
+    film_hidden_dim: 4
+    depth_shared: 1
+    depth_union: 1
+    nfeatures_init: 4
+    nfeatures_inter: null
+    norm_start_level: -1
+    norm_groups: 0
+    activation: ELU
+    dropout_start_level: null
+    p_dropout: -0.1
+    pool_mode: StrideConv
+    upsample_mode: nearest
+    inter_activation: null
+    norm_head_groups: 0
+    final_activation: ELU
+    kaiming_normal: true
+    depthwise: true
+
+input:
+  batch_size: 2
+  channels: 3
+  height: 16
+  width: 16
+
+conditioning:
+  feature_dim: 2
+  domain_count: 2
+  domain_order: [left, right]
+  vectors:
+    - [0.25, -0.5, 1.0, 0.0]
+    - [-0.75, 0.5, 0.0, 1.0]
+
+output:
+  channels: 10
+  pxyz_order: [x_px, y_px, z, photons]
+  channel_names:
+    - p
+    - photons_mu
+    - x_mu
+    - y_mu
+    - z_mu
+    - photons_sigma
+    - x_sigma
+    - y_sigma
+    - z_sigma
+    - bg
+
+checkpoint:
+  required_keys:
+    - epoch
+    - step_count
+    - global_step
+    - model_state_dict
+    - optimizer_state_dict
+    - scheduler_state_dict
+
+camera:
+  baseline_adu: 100.0
+  e_per_adu: 2.0
+  qe: 0.5
+  em_gain: 2.0
+  spurious_charge: 0.5
+
+normalization:
+  input_offset: 1.0
+  input_scale: 2.0
+  photon_scale: 10.0
+
+target:
+  photon_scale: 200.0
+  z_scale: 600.0
+  z_activation: tanh
+
+filter:
+  camera_pixel_nm_x: 100.0
+  camera_pixel_nm_y: 200.0
+  probability_min: 0.5
+  z_min_nm: 0.0
+  z_max_nm: 100.0
+  locprec_xy_nm_max: 200.0
+
+union:
+  max_dist_px: 2.0
+  left_to_right_dx_px: 100.0
+  left_to_right_dy_px: 0.0

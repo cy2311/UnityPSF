@@ -1,0 +1,24 @@
+train:
+  epochs: 2
+  online_generation:
+    steps_per_epoch: 1
+  peak_zmap_bootstrap:
+    frame_stop: 3
+    max_emitters: 32
+    alternating_rounds: 1
+    alternating_local_steps: 1
+    alternating_global_steps: 1
+  roi_bank_gamma:
+    enabled: true
+    update_interval_epochs: 1
+    start_epoch: 1
+    stop_epoch: 2
+    output_dir: roi_bank_gamma_smoke
+    roi_library_max_rois: 8
+    target_projected_emitters: 64
+    max_sampling_rounds: 2
+    gamma_steps: 2
+    num_posterior_samples: 2
+    auto_heldout_min_rois: 1
+metadata:
+  training_mode: neptune_v03_microtube_smoke

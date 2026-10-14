@@ -1,0 +1,9 @@
+train:
+  roi_bank_gamma:
+    enabled: true
+    update_interval_epochs: 50
+    start_epoch: 50
+    stop_epoch: 300
+    output_dir: roi_bank_gamma_start50
+metadata:
+  training_mode: neptune_v03_microtube_roi_gamma_start50

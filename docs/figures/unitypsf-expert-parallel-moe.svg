@@ -1,0 +1,287 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1125" viewBox="0 0 1800 1125" role="img" aria-labelledby="title desc">
+  <title id="title">UnityPSF expert-parallel modality-routed hard MoE</title>
+  <desc id="desc">Multiple PSF samples are routed by modality and channel to complete emitter, astigmatism, and double-helix experts placed on three GPUs. Each sample activates one expert, while a logical joint checkpoint indexes independent expert and channel states.</desc>
+  <defs>
+    <marker id="arrow-teal" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,5 L0,10 Z" fill="#2f776f"/>
+    </marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L9,5 L0,10 Z" fill="#87918f"/>
+    </marker>
+    <style>
+      .title { font: 700 34px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #202827; }
+      .subtitle { font: 400 17px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #66716f; }
+      .panel-title { font: 700 19px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #26302f; }
+      .section-label { font: 700 13px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #2f776f; }
+      .body { font: 400 15px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #3e4947; }
+      .body-strong { font: 700 15px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #27312f; }
+      .small { font: 400 12px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #6b7674; }
+      .small-strong { font: 700 12px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #35403e; }
+      .mono { font: 500 13px 'DejaVu Sans Mono', monospace; fill: #35403e; }
+      .mono-small { font: 500 11px 'DejaVu Sans Mono', monospace; fill: #5d6866; }
+      .stat { font: 700 23px 'Noto Sans CJK SC', 'DejaVu Sans', sans-serif; fill: #245f59; }
+      .hairline { stroke: #cbd2d0; stroke-width: 1; }
+      .route { fill: none; stroke: #2f776f; stroke-width: 2.4; marker-end: url(#arrow-teal); }
+      .flow { fill: none; stroke: #87918f; stroke-width: 1.5; marker-end: url(#arrow-gray); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1125" fill="#fbfcfc"/>
+
+  <text class="title" x="64" y="58">UnityPSF：每个样本只激活一个完整专家，三种 PSF 在三张 GPU 上并行训练</text>
+  <line class="hairline" x1="64" y1="86" x2="1736" y2="86"/>
+  <text class="subtitle" x="64" y="119">Modality-routed hard MoE with expert parallelism · 独立 FiLM、物理状态、optimizer 与 channel checkpoint</text>
+
+  <!-- Input evidence panel -->
+  <rect x="58" y="158" width="316" height="650" rx="7" fill="#f5f7f6" stroke="#d4d9d8"/>
+  <text class="section-label" x="82" y="190">A · MULTIMODAL SAMPLES</text>
+  <text class="panel-title" x="82" y="219">多模态、多样本输入</text>
+  <text class="small" x="82" y="243">manifest 显式记录 modality、channel 与 calibration</text>
+
+  <!-- Emitter samples -->
+  <rect x="82" y="270" width="268" height="142" rx="7" fill="#ffffff" stroke="#d7dddb"/>
+  <rect x="99" y="290" width="86" height="86" rx="5" fill="#eef3f2" stroke="#d4ddda"/>
+  <circle cx="126" cy="320" r="5" fill="#2f776f" opacity="0.95"/>
+  <circle cx="155" cy="344" r="7" fill="#2f776f" opacity="0.76"/>
+  <circle cx="133" cy="355" r="3" fill="#2f776f" opacity="0.55"/>
+  <circle cx="163" cy="311" r="3" fill="#2f776f" opacity="0.48"/>
+  <text class="body-strong" x="201" y="303">2D emitter</text>
+  <text class="small" x="201" y="326">sample_001 · sample_002</text>
+  <rect x="201" y="343" width="126" height="22" rx="4" fill="#e6f0ee"/>
+  <text class="mono-small" x="213" y="358">channel: main</text>
+  <text class="small" x="99" y="396">二维定位 · z loss masked</text>
+
+  <!-- Astig samples -->
+  <rect x="82" y="432" width="268" height="142" rx="7" fill="#ffffff" stroke="#d7dddb"/>
+  <rect x="99" y="452" width="86" height="86" rx="5" fill="#eef3f2" stroke="#d4ddda"/>
+  <ellipse cx="142" cy="478" rx="22" ry="8" fill="#2f776f" opacity="0.82"/>
+  <ellipse cx="142" cy="512" rx="9" ry="22" fill="#2f776f" opacity="0.55"/>
+  <line x1="112" y1="495" x2="172" y2="495" stroke="#9fb7b2" stroke-dasharray="3 3"/>
+  <text class="body-strong" x="201" y="465">Astigmatism</text>
+  <text class="small" x="201" y="488">sample_011 · sample_012</text>
+  <rect x="201" y="505" width="58" height="22" rx="4" fill="#e6f0ee"/>
+  <text class="mono-small" x="211" y="520">left</text>
+  <rect x="266" y="505" width="61" height="22" rx="4" fill="#e6f0ee"/>
+  <text class="mono-small" x="275" y="520">right</text>
+  <text class="small" x="99" y="558">独立 peak zmap · 99 nm anchor profile</text>
+
+  <!-- DH samples -->
+  <rect x="82" y="594" width="268" height="184" rx="7" fill="#ffffff" stroke="#d7dddb"/>
+  <rect x="99" y="614" width="86" height="86" rx="5" fill="#eef3f2" stroke="#d4ddda"/>
+  <g transform="rotate(-28 142 657)">
+    <circle cx="125" cy="657" r="12" fill="#2f776f" opacity="0.80"/>
+    <circle cx="159" cy="657" r="12" fill="#2f776f" opacity="0.58"/>
+    <line x1="125" y1="657" x2="159" y2="657" stroke="#245f59" stroke-width="2"/>
+  </g>
+  <path d="M116 688 A36 36 0 0 0 169 687" fill="none" stroke="#8aa9a4" stroke-width="2" marker-end="url(#arrow-teal)"/>
+  <text class="body-strong" x="201" y="627">Double helix</text>
+  <text class="small" x="201" y="650">sample_021 · sample_022</text>
+  <rect x="201" y="667" width="58" height="22" rx="4" fill="#e6f0ee"/>
+  <text class="mono-small" x="211" y="682">left</text>
+  <rect x="266" y="667" width="61" height="22" rx="4" fill="#e6f0ee"/>
+  <text class="mono-small" x="275" y="682">right</text>
+  <text class="small" x="99" y="722">解析 DH anchor：fixed carrier</text>
+  <text class="small" x="99" y="743">+ 13/21 residual Zernike + angle–z LUT</text>
+  <text class="small" x="99" y="764">每个样本绑定独立 calibration hash</text>
+
+  <!-- Router panel -->
+  <rect x="420" y="198" width="238" height="564" rx="7" fill="#eef4f3" stroke="#b8ccc8" stroke-width="1.4"/>
+  <text class="section-label" x="444" y="230">B · HARD ROUTER</text>
+  <text class="panel-title" x="444" y="259">零参数条件路由</text>
+  <text class="small" x="444" y="283">训练前完成分流，不跨 GPU 发送图像</text>
+
+  <rect x="446" y="313" width="186" height="72" rx="6" fill="#ffffff" stroke="#cbd8d5"/>
+  <text class="small-strong" x="462" y="337">1 · 解析模态</text>
+  <text class="mono" x="462" y="363">sample.modality</text>
+
+  <line class="flow" x1="539" y1="385" x2="539" y2="417"/>
+  <rect x="446" y="418" width="186" height="72" rx="6" fill="#ffffff" stroke="#cbd8d5"/>
+  <text class="small-strong" x="462" y="442">2 · 绑定实例</text>
+  <text class="mono" x="462" y="468">channel_id</text>
+
+  <line class="flow" x1="539" y1="490" x2="539" y2="522"/>
+  <rect x="446" y="523" width="186" height="72" rx="6" fill="#ffffff" stroke="#cbd8d5"/>
+  <text class="small-strong" x="462" y="547">3 · 放置专家</text>
+  <text class="mono" x="462" y="573">modality → rank</text>
+
+  <rect x="446" y="628" width="186" height="66" rx="6" fill="#2f776f"/>
+  <text x="539" y="653" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="600" fill="#ffffff">(modality, channel)</text>
+  <text x="539" y="677" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700" fill="#ffffff">每个样本只选一个实例</text>
+  <text class="small" x="444" y="728">显式 config / manifest 优先</text>
+  <text class="small" x="444" y="746">未知模态拒绝，不猜测</text>
+
+  <!-- Input to router routes -->
+  <path class="route" d="M350 341 C383 341 392 335 420 335"/>
+  <path class="route" d="M350 503 C384 503 394 480 420 480"/>
+  <path class="route" d="M350 686 C384 686 394 630 420 630"/>
+
+  <!-- Dominant expert parallel region -->
+  <rect x="706" y="158" width="1036" height="650" rx="7" fill="#ffffff" stroke="#cfd6d4"/>
+  <text class="section-label" x="734" y="190">C · EXPERT PARALLEL COMPUTE</text>
+  <text class="panel-title" x="734" y="219">三个完整专家驻留在三张 GPU；参数、FiLM、optimizer 与物理状态互不共享</text>
+  <text class="small" x="734" y="243">Expert 内复用同一接口，Expert 之间不做 gradient all-reduce</text>
+
+  <!-- GPU 0 -->
+  <rect x="734" y="270" width="980" height="146" rx="7" fill="#f7f9f8" stroke="#d3dad8"/>
+  <rect x="734" y="270" width="116" height="146" rx="7" fill="#e2efec"/>
+  <text class="section-label" x="759" y="300">RANK 0</text>
+  <text class="panel-title" x="759" y="329">GPU 0</text>
+  <text class="small" x="759" y="353">Emitter2D</text>
+  <text class="small" x="759" y="372">约 0.47M</text>
+  <circle cx="792" cy="394" r="7" fill="#2f776f"/>
+  <circle cx="817" cy="392" r="4" fill="#2f776f" opacity="0.55"/>
+
+  <text class="body-strong" x="879" y="298">Emitter2DExpert</text>
+  <rect x="879" y="319" width="116" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="937" y="339" text-anchor="middle">Preprocess</text>
+  <text class="small" x="937" y="357" text-anchor="middle">raw → frames</text>
+  <path class="flow" d="M995 344 L1023 344"/>
+  <rect x="1025" y="319" width="152" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1101" y="339" text-anchor="middle">Full backbone</text>
+  <text class="small" x="1101" y="357" text-anchor="middle">DoubleUNet</text>
+  <path class="flow" d="M1177 344 L1205 344"/>
+  <rect x="1207" y="319" width="106" height="49" rx="5" fill="#e7f1ef" stroke="#b8ccc8"/>
+  <text class="small-strong" x="1260" y="339" text-anchor="middle">FiLM</text>
+  <text class="small" x="1260" y="357" text-anchor="middle">3.3K params</text>
+  <path class="flow" d="M1313 344 L1341 344"/>
+  <rect x="1343" y="309" width="195" height="69" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1440" y="330" text-anchor="middle">2D heads · loss · decoder</text>
+  <text class="small" x="1440" y="350" text-anchor="middle">x/y · photon · confidence</text>
+  <text class="small" x="1440" y="368" text-anchor="middle">z = 0 · z_valid = false</text>
+  <rect x="1570" y="319" width="113" height="49" rx="24" fill="#2f776f"/>
+  <text x="1626" y="349" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="13" font-weight="600" fill="#ffffff">main</text>
+  <text class="small" x="879" y="397">一个输入样本 → 一个完整 expert forward → 一个独立 optimizer step</text>
+
+  <!-- GPU 1 -->
+  <rect x="734" y="434" width="980" height="146" rx="7" fill="#f7f9f8" stroke="#d3dad8"/>
+  <rect x="734" y="434" width="116" height="146" rx="7" fill="#d8e9e5"/>
+  <text class="section-label" x="759" y="464">RANK 1</text>
+  <text class="panel-title" x="759" y="493">GPU 1</text>
+  <text class="small" x="759" y="517">Astigmatism</text>
+  <text class="small" x="759" y="536">2 × 0.47M</text>
+  <ellipse cx="793" cy="557" rx="19" ry="6" fill="#2f776f" opacity="0.80"/>
+  <ellipse cx="821" cy="557" rx="6" ry="18" fill="#2f776f" opacity="0.48"/>
+
+  <text class="body-strong" x="879" y="462">AstigmatismExpert</text>
+  <rect x="879" y="483" width="116" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="937" y="503" text-anchor="middle">Preprocess</text>
+  <text class="small" x="937" y="521" text-anchor="middle">channel crop</text>
+  <path class="flow" d="M995 508 L1023 508"/>
+  <rect x="1025" y="483" width="152" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1101" y="503" text-anchor="middle">Full backbone</text>
+  <text class="small" x="1101" y="521" text-anchor="middle">independent copy</text>
+  <path class="flow" d="M1177 508 L1205 508"/>
+  <rect x="1207" y="483" width="106" height="49" rx="5" fill="#e7f1ef" stroke="#b8ccc8"/>
+  <text class="small-strong" x="1260" y="503" text-anchor="middle">FiLM</text>
+  <text class="small" x="1260" y="521" text-anchor="middle">per instance</text>
+  <path class="flow" d="M1313 508 L1341 508"/>
+  <rect x="1343" y="473" width="195" height="69" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1440" y="494" text-anchor="middle">Astig heads · loss · decoder</text>
+  <text class="small" x="1440" y="514" text-anchor="middle">x/y/z · photon · uncertainty</text>
+  <text class="small" x="1440" y="532" text-anchor="middle">independent peak zmap + gamma</text>
+  <rect x="1570" y="473" width="113" height="32" rx="16" fill="#2f776f"/>
+  <text x="1626" y="494" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="600" fill="#ffffff">left</text>
+  <rect x="1570" y="510" width="113" height="32" rx="16" fill="#5c918b"/>
+  <text x="1626" y="531" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="600" fill="#ffffff">right</text>
+  <text class="small" x="879" y="561">left/right 初值可相同；训练后 model、FiLM、optimizer、zmap 与 checkpoint 完全独立</text>
+
+  <!-- GPU 2 -->
+  <rect x="734" y="598" width="980" height="180" rx="7" fill="#f7f9f8" stroke="#d3dad8"/>
+  <rect x="734" y="598" width="116" height="180" rx="7" fill="#cee3df"/>
+  <text class="section-label" x="759" y="628">RANK 2</text>
+  <text class="panel-title" x="759" y="657">GPU 2</text>
+  <text class="small" x="759" y="681">Double helix</text>
+  <text class="small" x="759" y="700">2 × 0.47–0.50M</text>
+  <g transform="rotate(-26 807 733)">
+    <circle cx="793" cy="733" r="10" fill="#2f776f" opacity="0.84"/>
+    <circle cx="821" cy="733" r="10" fill="#2f776f" opacity="0.55"/>
+  </g>
+
+  <text class="body-strong" x="879" y="626">DoubleHelixExpert</text>
+  <rect x="879" y="647" width="116" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="937" y="667" text-anchor="middle">Preprocess</text>
+  <text class="small" x="937" y="685" text-anchor="middle">channel crop</text>
+  <path class="flow" d="M995 672 L1023 672"/>
+  <rect x="1025" y="647" width="152" height="49" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1101" y="667" text-anchor="middle">Full backbone</text>
+  <text class="small" x="1101" y="685" text-anchor="middle">independent copy</text>
+  <path class="flow" d="M1177 672 L1205 672"/>
+  <rect x="1207" y="647" width="106" height="49" rx="5" fill="#e7f1ef" stroke="#b8ccc8"/>
+  <text class="small-strong" x="1260" y="667" text-anchor="middle">FiLM</text>
+  <text class="small" x="1260" y="685" text-anchor="middle">per instance</text>
+  <path class="flow" d="M1313 672 L1341 672"/>
+  <rect x="1343" y="637" width="195" height="69" rx="5" fill="#ffffff" stroke="#d5dcda"/>
+  <text class="small-strong" x="1440" y="658" text-anchor="middle">DH heads · loss · decoder</text>
+  <text class="small" x="1440" y="678" text-anchor="middle">x/y/z · lobe angle · separation</text>
+  <text class="small" x="1440" y="696" text-anchor="middle">sample-specific calibration</text>
+  <rect x="1570" y="637" width="113" height="32" rx="16" fill="#2f776f"/>
+  <text x="1626" y="658" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="600" fill="#ffffff">left</text>
+  <rect x="1570" y="674" width="113" height="32" rx="16" fill="#5c918b"/>
+  <text x="1626" y="695" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="12" font-weight="600" fill="#ffffff">right</text>
+  <rect x="879" y="720" width="659" height="39" rx="5" fill="#edf4f2" stroke="#c7d8d4"/>
+  <text class="small-strong" x="896" y="744">解析 anchor</text>
+  <text class="small" x="987" y="744">fixed carrier → residual Zernike → angle–z LUT；首版冻结，不进入每个 batch 的高成本优化</text>
+
+  <!-- Router to expert routes -->
+  <path class="route" d="M658 335 C680 335 688 343 706 343"/>
+  <path class="route" d="M658 480 C682 480 690 507 706 507"/>
+  <path class="route" d="M658 630 C682 630 690 688 706 688"/>
+
+  <!-- Joint checkpoint band -->
+  <rect x="58" y="844" width="1166" height="218" rx="7" fill="#ffffff" stroke="#cfd6d4"/>
+  <text class="section-label" x="82" y="876">D · ONE LOGICAL JOINT CHECKPOINT</text>
+  <text class="panel-title" x="82" y="905">统一入口，内部保留五个独立实例 shard</text>
+  <text class="small" x="82" y="929">训练恢复加载 model + AdamW；推理只加载选中的 modality/channel 权重</text>
+
+  <rect x="82" y="954" width="178" height="74" rx="6" fill="#2f776f"/>
+  <text x="171" y="981" text-anchor="middle" font-family="Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700" fill="#ffffff">manifest.json</text>
+  <text x="171" y="1004" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="11" fill="#dcece9">route · step · hash</text>
+  <text x="171" y="1021" text-anchor="middle" font-family="DejaVu Sans Mono, monospace" font-size="11" fill="#dcece9">status: complete</text>
+
+  <path class="flow" d="M260 991 L291 991"/>
+  <rect x="294" y="954" width="158" height="74" rx="6" fill="#f3f6f5" stroke="#d0d8d6"/>
+  <text class="small-strong" x="373" y="980" text-anchor="middle">Emitter · main</text>
+  <text class="mono-small" x="373" y="1003" text-anchor="middle">~1.9 MiB</text>
+  <text class="small" x="373" y="1020" text-anchor="middle">rank 0 shard</text>
+
+  <rect x="466" y="954" width="158" height="74" rx="6" fill="#f3f6f5" stroke="#d0d8d6"/>
+  <text class="small-strong" x="545" y="980" text-anchor="middle">Astig · left</text>
+  <text class="mono-small" x="545" y="1003" text-anchor="middle">~1.9 MiB</text>
+  <text class="small" x="545" y="1020" text-anchor="middle">rank 1 shard</text>
+
+  <rect x="638" y="954" width="158" height="74" rx="6" fill="#f3f6f5" stroke="#d0d8d6"/>
+  <text class="small-strong" x="717" y="980" text-anchor="middle">Astig · right</text>
+  <text class="mono-small" x="717" y="1003" text-anchor="middle">~1.9 MiB</text>
+  <text class="small" x="717" y="1020" text-anchor="middle">rank 1 shard</text>
+
+  <rect x="810" y="954" width="158" height="74" rx="6" fill="#f3f6f5" stroke="#d0d8d6"/>
+  <text class="small-strong" x="889" y="980" text-anchor="middle">DH · left</text>
+  <text class="mono-small" x="889" y="1003" text-anchor="middle">~1.9–2.0 MiB</text>
+  <text class="small" x="889" y="1020" text-anchor="middle">rank 2 shard</text>
+
+  <rect x="982" y="954" width="216" height="74" rx="6" fill="#f3f6f5" stroke="#d0d8d6"/>
+  <text class="small-strong" x="1090" y="980" text-anchor="middle">DH · right</text>
+  <text class="mono-small" x="1090" y="1003" text-anchor="middle">~1.9–2.0 MiB</text>
+  <text class="small" x="1090" y="1020" text-anchor="middle">rank 2 shard</text>
+
+  <!-- Parameter summary -->
+  <rect x="1250" y="844" width="492" height="218" rx="7" fill="#eef4f3" stroke="#b8ccc8"/>
+  <text class="section-label" x="1276" y="876">E · CONDITIONAL COMPUTE</text>
+  <text class="panel-title" x="1276" y="905">参数规模</text>
+  <line x1="1276" y1="923" x2="1716" y2="923" stroke="#cad7d4"/>
+
+  <text class="small" x="1276" y="953">总存储参数 · 5 instances</text>
+  <text class="stat" x="1688" y="953" text-anchor="end">约 2.35–2.45M</text>
+
+  <text class="small" x="1276" y="984">单样本激活 · 1 expert instance</text>
+  <text class="stat" x="1688" y="984" text-anchor="end">约 0.47–0.50M</text>
+
+  <text class="small" x="1276" y="1015">模型权重 / 完整训练恢复</text>
+  <text class="stat" x="1688" y="1015" text-anchor="end">约 10 / 30 MiB</text>
+
+  <text class="small-strong" x="1276" y="1043">精确定义：</text>
+  <text class="small" x="1356" y="1043">hard MoE，不是 learned top-k gate</text>
+
+  <line class="hairline" x1="58" y1="1090" x2="1742" y2="1090"/>
+  <text x="900" y="1114" text-anchor="middle" font-family="Noto Sans CJK SC, DejaVu Sans, sans-serif" font-size="14" font-weight="700" fill="#2f776f">一个样本 → 一个完整专家；一次训练任务 → 三种 PSF 并行学习；一个 checkpoint 入口 → 五个独立科学状态</text>
+</svg>

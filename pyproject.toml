@@ -1,0 +1,87 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unity-psf"
+version = "0.3.0"
+description = "UnityPSF v0.3 multimodal SMLM localization research package."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "numpy",
+  "torch",
+  "h5py",
+  "tifffile",
+  "matplotlib",
+  "scipy",
+  "scikit-learn",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "ruff>=0.6",
+  "mypy>=1.8",
+  "types-PyYAML>=6.0.12",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+exclude = [".local", "logs", "output", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402", "E501", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/double_helix/run_calibration.py" = ["F401", "F403", "F405"]
+"src/double_helix/calibration.py" = ["F403", "F405"]
+"src/double_helix/field_fit.py" = ["F403", "F405"]
+"src/double_helix/field_gamma.py" = ["F403", "F405"]
+"src/double_helix/gamma_field.py" = ["F403", "F405"]
+"src/double_helix/local_fit.py" = ["F403", "F405"]
+"src/double_helix/physical_update.py" = ["F403", "F405"]
+"src/double_helix/pixel_pupil_calibration.py" = ["F403", "F405"]
+"src/double_helix/shared_carrier_field.py" = ["F403", "F405"]
+"src/unity_psf/training/high_fidelity/__init__.py" = ["F401"]
+"src/unity_psf/training/high_fidelity/engine.py" = ["F401"]
+"src/unity_psf/training/run_high_fidelity.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.10"
+files = [
+  "src/unity_psf/localization/runtime/types.py",
+  "src/unity_psf/localization/data/online_validation.py",
+  "src/unity_psf/localization/runtime/physical_config.py",
+  "src/unity_psf/contracts/checkpoint_metadata.py",
+  "src/unity_psf/localization/runtime/config.py",
+  "src/unity_psf/contracts/checkpoint.py",
+]
+check_untyped_defs = true
+disallow_untyped_defs = true
+follow_imports = "skip"
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+[project.scripts]
+unity-psf-materialize-config = "unity_psf.config.materialize:main"
+unity-psf-gamma-update-monitor = "unity_psf.diagnostics.gamma_update_monitor:main"
+unity-psf-train-localization = "unity_psf.training.run_localization:main"
+unity-psf-train-high-fidelity = "unity_psf.training.run_high_fidelity:main"
+unity-psf-train = "unity_psf.cli.train_selection:main"
+unity-psf-checkpoint = "unity_psf.cli.joint_checkpoint:main"
+unity-psf-calibrate-double-helix = "unity_psf.cli.double_helix:calibrate_double_helix"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["unity_psf*", "double_helix*", "ppg*"]
+
+[tool.setuptools.package-data]
+"unity_psf.localization.cuda_extension" = ["*.cpp", "*.cu", "*.py"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

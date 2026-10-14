@@ -1,0 +1,7 @@
+train:
+  roi_bank_gamma:
+    start_epoch: 50
+    output_dir: roi_bank_gamma_start50_interval5_lr025_steps100_epoch300
+metadata:
+  training_mode: neptune_v03_standard_roi_gamma_start50_interval5_lr025_steps100_epoch300
+  standard_note: neptune_iwae formal default with ROI128 fixed library gamma updates from epoch 50 every 5 epochs.

@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "PyYAML>=6.0",
   "numpy",
+  "scipy",
   "torch",
   "h5py",
   "tifffile",
@@ -26,9 +27,13 @@ neptune-v03-materialize-config = "neptune_v03.config.materialize:main"
 neptune-v03-gamma-update-monitor = "neptune_v03.diagnostics.gamma_update_monitor:main"
 neptune-v03-train-localization = "neptune_v03.training.run_localization:main"
 neptune-v03-train-high-fidelity = "neptune_v03.training.run_high_fidelity:main"
+neptune-v04-rebuild-microtube-zmap = "neptune_v03.microtube_zmap.run_high_quality_initial_zmap:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+neptune_v03 = ["localization/cuda_extension/*.cpp", "localization/cuda_extension/*.cu", "localization/cuda_extension/setup.py"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

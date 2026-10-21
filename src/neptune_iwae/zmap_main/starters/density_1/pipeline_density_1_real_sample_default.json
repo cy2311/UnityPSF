@@ -1,0 +1,208 @@
+{
+  "$schema": "./pipeline.schema.json",
+  "schema_version": "0.1",
+  "optical": {
+    "NA": 1.4,
+    "pixel_size_nm_x": 101.11,
+    "pixel_size_nm_y": 98.83,
+    "wavelength_nm": 660,
+    "n_medium": 1.518
+  },
+  "camera": {
+    "qe": 0.9,
+    "read_sigma": 0,
+    "spurious_charge": 0.002,
+    "em_gain": 1.0,
+    "e_per_adu": 1.020784562122306,
+    "baseline": 398.6
+  },
+  "phase_retrieval": {
+    "backend": "simulator_diff",
+    "simulator_diff": {
+      "normalize_coeffs": false,
+      "zernike": {
+        "noll_start": 4,
+        "noll_end": 12,
+        "ncc_thresh": 0.8
+      },
+      "runtime": {
+        "device": "cuda",
+        "max_iter": 60,
+        "adam_warmup": 8,
+        "lr_z": 0.12,
+        "lr_roi": 0.12,
+        "batch_size_roi": 4,
+        "upsample": 3
+      }
+    },
+    "input": {
+      "tiff_path": "datasets/raw/spool_100mW_30ms_3D_1_2_MMStack_Default.ome.tif"
+    },
+    "patching": {
+      "patch_xy": 25,
+      "center_side": 80,
+      "step": 2,
+      "n_each_side": 30
+    },
+    "detection": {
+      "min_distance": 25,
+      "n_emitters": 100
+    },
+    "batch": {
+      "input_dir": "datasets/raw",
+      "min_ncc_for_aggregation": 0.8
+    },
+    "pupil": {
+      "n_pixels": 128
+    }
+  },
+  "simulation": {
+    "num_samples": 1,
+    "frames_per_sample": 10000,
+    "num_emitters": 218198,
+    "n_max": 256,
+    "use_gpu": true,
+    "gpu_id": 0,
+    "background_uniform": [
+      0.0,
+      46.50018560779394
+    ],
+    "emitter": {
+      "emitter_extent": [
+        [
+          -0.5,
+          63.5
+        ],
+        [
+          -0.5,
+          63.5
+        ],
+        [
+          -0.6,
+          0.6
+        ]
+      ],
+      "field_extent": [
+        [
+          540,
+          660
+        ],
+        [
+          540,
+          660
+        ]
+      ],
+      "z_range": [
+        -0.6,
+        0.6
+      ],
+      "intensity_mu_sig": [
+        20000.0,
+        1000.0
+      ],
+      "intensity_clip": [
+        0.0,
+        31000.0
+      ],
+      "lifetime_avg": 1.0,
+      "orientation": {
+        "enabled": false,
+        "theta_range_deg": [
+          0,
+          90
+        ],
+        "phi_range_deg": [
+          0,
+          360
+        ],
+        "sample_mode": "uniform_cos"
+      }
+    },
+    "simulation": {
+      "random_seed": 42
+    },
+    "profiles": {
+      "train": {
+        "frames_per_sample": 10000,
+        "num_samples": 1,
+        "num_emitters": 218198,
+        "n_max": 256
+      },
+      "eval": {
+        "frames_per_sample": 1000,
+        "num_samples": 1,
+        "num_emitters": 21938,
+        "n_max": 256
+      }
+    },
+    "psf": {
+      "psf_type": "vector",
+      "zernike_basis_kind": "auto",
+      "amplitude_mode": "auto",
+      "vector": {
+        "npupil": 128,
+        "psf_size": 64,
+        "otf_rescale_xy": [
+          0.0,
+          0.0
+        ],
+        "refmed": 1.518,
+        "refcov": 1.518,
+        "refimm": 1.518,
+        "objstage0": 0.0,
+        "batch_size": 96,
+        "gpu_pipeline": true,
+        "psf_chunk": 20000,
+        "event_batch": 256,
+        "mean_psf": {
+          "enabled": true,
+          "ncc_thresh": 0.8,
+          "z_steps": 121
+        }
+      }
+    }
+  },
+  "train": {
+    "epochs": 500,
+    "batch_size": 64,
+    "log_every": 0,
+    "scaling": {
+      "input_offset": 257.0,
+      "input_scale": 900.0,
+      "photon_max": 31000.0,
+      "z_max": 0.6,
+      "bg_max": 240.0
+    },
+    "regen_train_dataset_each_epoch": true,
+    "regen_eval_dataset_each_epoch": false
+  },
+  "localization_overrides": {
+    "depthwise": false
+  },
+  "paths": {
+    "data_root": "datasets",
+    "raw_tiff_dir": "datasets/raw",
+    "phase_output_dir": "datasets/phase",
+    "phase_figures_dir": "datasets/phase/figures",
+    "seeds_dir": "datasets/seeds"
+  },
+  "metadata": {
+    "last_normalized_at": "2026-04-23T00:00:00+08:00",
+    "real_sample_default_source": {
+      "normalization_summary": "output/diagnostics/first3_ckpt_norm_recovery_density1_scale_sweep/stdconv_density1_offset257_scale900/summary.json",
+      "background_audit_summary": "neptune/output/2026-04-22-sample-bg-norm-audit-left-half/sample_bg_norm_audit_summary.json"
+    },
+    "formal_locked_stage": {
+      "run_stamp": "2026-04-27-4p22-o2-depth-r30s100-order2-left-half",
+      "starter_checkpoint": "neptune/neptune_core/starters/density_1/checkpoint_best_jaccard_stdconv_density1.pt",
+      "starter_best_meta": "neptune/neptune_core/starters/density_1/best_jaccard_stdconv_density1.json",
+      "clean_reharvest_summary": "neptune/output/2026-04-23-stdconv-d1-real-sample-default257-900-vram-clean-reharvest/clean_reharvest_summary.json",
+      "real_nat_diagnostics_summary": "neptune/nat_maps/real_nat_diagnostics_summary.json",
+      "export_nat_zmap_summary": "neptune/nat_maps/export_nat_zmap_summary.json",
+      "alternating_coeff_maps_npz": "neptune/nat_maps/alternating_full_roi_zernike_maps_nm.npz",
+      "nat_alternating_rounds": 30,
+      "nat_alternating_local_steps": 100,
+      "nat_alternating_global_steps": 100
+    }
+  }
+}

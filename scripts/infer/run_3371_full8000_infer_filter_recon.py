@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
 import tifffile
@@ -129,6 +130,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, default=RUN_3371)
     parser.add_argument("--config", type=Path, default=CONFIG)
     parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--coeff-map", type=Path, default=None, help="Explicit fixed single-domain coefficient map.")
     parser.add_argument("--right-coeff-map", type=Path, default=None)
     parser.add_argument("--domain-count", type=int, default=2)
     parser.add_argument("--right-domain-index", type=int, default=1)
@@ -171,6 +173,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--radius-mode", choices=("fixed", "xy_uncertainty_mean"), default="fixed")
     parser.add_argument("--display-mode", choices=("quantile", "fixed_imax"), default="quantile")
     parser.add_argument("--display-imax", type=float, default=None)
+    parser.add_argument("--z-min-nm", type=float, default=-600.0)
+    parser.add_argument("--z-max-nm", type=float, default=600.0)
     parser.add_argument("--display-imax-min", type=float, default=-2.5228787452803374)
     parser.add_argument("--normalization-fov", type=str, default=None)
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
@@ -184,6 +188,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--right-crop-height", type=int, default=1200)
     parser.add_argument("--infer-recon-root", type=Path, default=SRC_ROOT / "neptune_v03" / "infer_recon")
     parser.add_argument("--input-preprocess", choices=("fd_deeploc_recenter", "raw_adu"), default="fd_deeploc_recenter")
+    parser.add_argument(
+        "--recenter-scope",
+        choices=("tile", "frame", "regularized_tile"),
+        default="tile",
+        help="Background recenter scope for fd_deeploc_recenter.",
+    )
+    parser.add_argument("--tile-bg-smoothing-sigma", type=float, default=1.0)
+    parser.add_argument("--tile-bg-shrink", type=float, default=0.5)
+    parser.add_argument("--tile-bg-residual-limit", type=float, default=30.0)
+    parser.add_argument("--signal-gain", type=float, default=1.0)
+    parser.add_argument("--signal-anchor-adu", type=float, default=None)
     parser.add_argument("--overwrite-output", action="store_true", default=False)
     parser.add_argument("--infer-amp", action="store_true", default=True)
     parser.add_argument("--no-infer-amp", dest="infer_amp", action="store_false")
@@ -228,16 +243,95 @@ def load_tiff_block(path: Path, start: int, stop: int) -> np.ndarray:
         return np.asarray(tif.series[0].asarray(key=slice(int(start), int(stop))), dtype=np.float32)
 
 
-def final_coeff_maps(run_dir: Path) -> dict[str, Path]:
+def load_current_physical_state(run_dir: Path) -> dict[str, object]:
     state_path = run_dir / "metadata/current_physical_state.json"
-    payload = json.loads(state_path.read_text(encoding="utf-8"))
+    return json.loads(state_path.read_text(encoding="utf-8"))
+
+
+def final_coeff_maps(run_dir: Path) -> dict[str, Path]:
+    payload = load_current_physical_state(run_dir)
     out: dict[str, Path] = {}
     for item in payload["coeff_maps"]:
         out[str(item["name"])] = Path(item["coeff_maps_npz"])
     return out
 
 
-def load_model(config_path: Path, checkpoint: Path, device: torch.device) -> tuple[torch.nn.Module, dict[str, object]]:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def physical_pairing_metadata(
+    checkpoint: Mapping[str, object],
+    current_state: Mapping[str, object],
+) -> dict[str, object]:
+    checkpoint_epoch = int(checkpoint["epoch"])
+    checkpoint_global_step = int(checkpoint["global_step"])
+    # Runs with physical update disabled keep null endpoint metadata; the checkpoint is authoritative.
+    physical_epoch = checkpoint_epoch if current_state.get("epoch") is None else int(current_state["epoch"])
+    physical_global_step = checkpoint_global_step if current_state.get("global_step") is None else int(current_state["global_step"])
+    if (checkpoint_epoch, checkpoint_global_step) != (physical_epoch, physical_global_step):
+        raise ValueError(
+            "Checkpoint endpoint "
+            f"epoch={checkpoint_epoch}, global_step={checkpoint_global_step} does not match the current physical "
+            f"endpoint epoch={physical_epoch}, global_step={physical_global_step}. The coefficient-map path is mutable; "
+            "use the final checkpoint for this run or provide an immutable map snapshot from the checkpoint endpoint."
+        )
+
+    embedded_state = checkpoint.get("physical_state")
+    embedded = embedded_state if isinstance(embedded_state, Mapping) else {}
+    coeff_maps: dict[str, dict[str, object]] = {}
+    for item in current_state["coeff_maps"]:
+        path = Path(str(item["coeff_maps_npz"])).resolve()
+        coeff_maps[str(item["name"])] = {
+            "path": str(path),
+            "sha256": sha256_file(path),
+        }
+    return {
+        "contract": "final_network_plus_final_physical_state_endpoint",
+        "checkpoint_epoch": checkpoint_epoch,
+        "checkpoint_global_step": checkpoint_global_step,
+        "checkpoint_embedded_physical_epoch": embedded.get("epoch"),
+        "checkpoint_embedded_physical_global_step": embedded.get("global_step"),
+        "checkpoint_embedded_condition_store_version": embedded.get("condition_store_version"),
+        "evaluated_physical_epoch": physical_epoch,
+        "evaluated_physical_global_step": physical_global_step,
+        "evaluated_condition_store_version": current_state.get("condition_store_version"),
+        "coeff_maps": coeff_maps,
+    }
+
+
+def runtime_pixel_size_nm(runtime: dict[str, object]) -> tuple[float, float]:
+    params = runtime["batch_provider"]["params"]
+    return float(params["pixel_size_nm_x"]), float(params["pixel_size_nm_y"])
+
+
+def resolve_coeff_map(coeff_maps: dict[str, Path], *, side: str, domain_count: int) -> Path:
+    if side in coeff_maps:
+        return coeff_maps[side]
+    if side == "left" and int(domain_count) == 1 and len(coeff_maps) == 1:
+        return next(iter(coeff_maps.values()))
+    available = ", ".join(sorted(coeff_maps)) or "none"
+    raise KeyError(f"No coefficient map for side={side!r}; available maps: {available}")
+
+
+def rcc_fallback_allowed(*, returncode: int, pairwise_path: Path, corrected_path: Path) -> bool:
+    return (
+        int(returncode) != 0
+        and pairwise_path.is_file()
+        and pairwise_path.stat().st_size == 0
+        and not corrected_path.exists()
+    )
+
+
+def load_model(
+    config_path: Path,
+    checkpoint: Path,
+    device: torch.device,
+) -> tuple[torch.nn.Module, dict[str, object], Mapping[str, object]]:
     cfg = load_config(config_path)
     runtime = build_localization_runtime_config(cfg, config_base_dir=config_path.parent, seed=0)
     model_spec = runtime["model"]
@@ -246,7 +340,9 @@ def load_model(config_path: Path, checkpoint: Path, device: torch.device) -> tup
     state = payload["model_state_dict"] if isinstance(payload, dict) and "model_state_dict" in payload else payload
     model.load_state_dict(state, strict=True)
     model.to(device).eval()
-    return model, runtime
+    if not isinstance(payload, Mapping):
+        raise TypeError("Formal infer requires a checkpoint payload with endpoint metadata")
+    return model, runtime, payload
 
 
 def domain_condition(
@@ -414,6 +510,27 @@ def flush_bucket(
     return count
 
 
+def regularized_tile_normalize(frame: np.ndarray, *, tiles: list[dict[str, int]], frame_proc, smoothing_sigma: float, shrink: float, residual_limit: float) -> np.ndarray:
+    image = np.asarray(frame, dtype=np.float32)
+    anchor = float(frame_proc.estimate_background_numpy(image[None, ...]))
+    ys = sorted({int(t["valid_y0"]) for t in tiles}); xs = sorted({int(t["valid_x0"]) for t in tiles})
+    yi = {v: i for i, v in enumerate(ys)}; xi = {v: i for i, v in enumerate(xs)}
+    residuals = np.zeros((len(ys), len(xs)), dtype=np.float32)
+    for tile in tiles:
+        y0, x0 = int(tile["patch_y0"]), int(tile["patch_x0"])
+        h = int(tile["keep_y0"]) + int(tile["keep_h"]); w = int(tile["keep_x0"]) + int(tile["keep_w"])
+        local = image[y0:y0 + h, x0:x0 + w]
+        residuals[yi[int(tile["valid_y0"])] , xi[int(tile["valid_x0"])] ] = float(frame_proc.estimate_background_numpy(local[None, ...])) - anchor
+    residuals = np.clip(residuals, -abs(float(residual_limit)), abs(float(residual_limit)))
+    try:
+        from scipy.ndimage import gaussian_filter, zoom
+        field = zoom(gaussian_filter(residuals, sigma=max(float(smoothing_sigma), 0.0), mode="nearest"), (image.shape[0] / residuals.shape[0], image.shape[1] / residuals.shape[1]), order=1, mode="nearest", prefilter=False)
+    except Exception:
+        field = np.resize(residuals, image.shape)
+    field = np.clip(field[: image.shape[0], : image.shape[1]] * float(shrink), -abs(float(residual_limit)), abs(float(residual_limit)))
+    return image - (anchor + field) + float(frame_proc.config.train_background_adu)
+
+
 def run_side(
     *,
     side: str,
@@ -434,6 +551,7 @@ def run_side(
     infer_dir = side_dir / "infer"
     infer_dir.mkdir(parents=True, exist_ok=True)
     provider = FullResZernikeConditioning.from_npz(coeff_map)
+    camera_pixel_nm_x, camera_pixel_nm_y = runtime_pixel_size_nm(runtime)
     condition_dim = int(getattr(model, "condition_dim"))
     feature_dim = condition_feature_dim(
         condition_dim=condition_dim,
@@ -473,8 +591,8 @@ def run_side(
         "decode_accept_threshold": float(args.decode_accept_threshold),
         "decode_aggregation": "sum",
         "decode_accept_rule": ">",
-        "camera_pixel_nm_x": 101.11,
-        "camera_pixel_nm_y": 98.83,
+        "camera_pixel_nm_x": camera_pixel_nm_x,
+        "camera_pixel_nm_y": camera_pixel_nm_y,
         "localization_schema": "neptune_v03_localization_v0.2",
         "localization_units": {
             "x_px": "camera_pixel",
@@ -493,7 +611,10 @@ def run_side(
         },
         "source_train_dir": str(args.run_dir),
         "input_preprocess": str(args.input_preprocess),
+        "recenter_scope": str(args.recenter_scope),
         "model_input": "recentered_raw_adu" if frame_proc is not None else "raw_adu",
+        "signal_gain": float(args.signal_gain),
+        "signal_anchor_adu": None if args.signal_anchor_adu is None else float(args.signal_anchor_adu),
     }
     (side_dir / "derived_runtime_state.json").write_text(json.dumps(runtime_state, indent=2) + "\n", encoding="utf-8")
     (infer_dir / "derived_runtime_state.json").write_text(json.dumps(runtime_state, indent=2) + "\n", encoding="utf-8")
@@ -526,14 +647,50 @@ def run_side(
             conds: list[torch.Tensor] = []
             metas: list[dict[str, int]] = []
             n_windows = int(crop.shape[0]) - 2
+            regularized_frames = None
+            if frame_proc is not None and str(args.recenter_scope) == "regularized_tile":
+                regularized_frames = np.stack(
+                    [
+                        regularized_tile_normalize(
+                            crop[i],
+                            tiles=tiles,
+                            frame_proc=frame_proc,
+                            smoothing_sigma=float(args.tile_bg_smoothing_sigma),
+                            shrink=float(args.tile_bg_shrink),
+                            residual_limit=float(args.tile_bg_residual_limit),
+                        )
+                        for i in range(int(crop.shape[0]))
+                    ],
+                    axis=0,
+                ).astype(np.float32, copy=False)
             for win_idx in range(n_windows):
                 frame_id = int(start) + int(win_idx) + 1
+                normalized_window = None
+                if frame_proc is not None and str(args.recenter_scope) == "frame":
+                    # Estimate one background per full frame, then share it across all spatial tiles.
+                    normalized_window = np.concatenate(
+                        [frame_proc.normalize_numpy(crop[win_idx + i : win_idx + i + 1]) for i in range(3)],
+                        axis=0,
+                    ).astype(np.float32, copy=False)
+                elif regularized_frames is not None:
+                    normalized_window = regularized_frames[win_idx : win_idx + 3]
                 for tile in tiles:
                     y0 = int(tile["patch_y0"])
                     x0 = int(tile["patch_x0"])
                     patch = np.ascontiguousarray(crop[win_idx : win_idx + 3, y0 : y0 + int(args.roi_size), x0 : x0 + int(args.roi_size)], dtype=np.float32)
                     if frame_proc is not None:
-                        patch = np.ascontiguousarray(frame_proc.normalize_numpy(patch), dtype=np.float32)
+                        if normalized_window is not None:
+                            patch = normalized_window[:, y0 : y0 + int(args.roi_size), x0 : x0 + int(args.roi_size)]
+                        else:
+                            patch = np.ascontiguousarray(frame_proc.normalize_numpy(patch), dtype=np.float32)
+                    if float(args.signal_gain) != 1.0:
+                        if args.signal_anchor_adu is None:
+                            raise ValueError("--signal-anchor-adu is required when --signal-gain differs from 1.0")
+                        patch = np.ascontiguousarray(
+                            float(args.signal_anchor_adu)
+                            + (patch - float(args.signal_anchor_adu)) * float(args.signal_gain),
+                            dtype=np.float32,
+                        )
                     patches.append(torch.from_numpy(patch))
                     conds.append(
                         domain_condition(
@@ -640,6 +797,7 @@ def run_side(
     )
     reconstruction_coordinate_source = "spatial_degrid" if spatial_degrid else ("degrid" if bool(args.degrid) else "raw")
     rcc_summary = None
+    rcc_applied = False
     if bool(args.rcc_drift):
         if not bool(args.degrid):
             raise ValueError("standard RCC drift correction requires degrid to be enabled")
@@ -676,10 +834,39 @@ def run_side(
             "--min-pair-correlation",
             str(args.rcc_min_pair_correlation),
         ]
-        subprocess.run(rcc_cmd, check=True)
-        pred_for_filter = infer_dir / "predictions_degrid_rcc_corrected.h5"
-        rcc_summary = infer_dir / "rcc_summary.json"
-        reconstruction_coordinate_source = "spatial_degrid_rcc_corrected" if spatial_degrid else "degrid_rcc_corrected"
+        rcc_pairwise_path = infer_dir / "rcc_pairwise_shifts.csv"
+        rcc_corrected_path = infer_dir / "predictions_degrid_rcc_corrected.h5"
+        rcc_result = subprocess.run(rcc_cmd, check=False)
+        if rcc_result.returncode != 0:
+            if not rcc_fallback_allowed(
+                returncode=rcc_result.returncode,
+                pairwise_path=rcc_pairwise_path,
+                corrected_path=rcc_corrected_path,
+            ):
+                raise subprocess.CalledProcessError(rcc_result.returncode, rcc_cmd)
+            rcc_summary = infer_dir / "rcc_summary.json"
+            rcc_summary.write_text(
+                json.dumps(
+                    {
+                        "enabled": True,
+                        "applied": False,
+                        "reason": "no_valid_pairwise_shifts",
+                        "pairwise_shifts": str(rcc_pairwise_path),
+                        "returncode": int(rcc_result.returncode),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            print(json.dumps({"rcc_applied": False, "reason": "no_valid_pairwise_shifts"}), flush=True)
+        else:
+            if not rcc_corrected_path.is_file():
+                raise FileNotFoundError(f"RCC reported success but did not create {rcc_corrected_path}")
+            pred_for_filter = rcc_corrected_path
+            rcc_summary = infer_dir / "rcc_summary.json"
+            rcc_applied = True
+            reconstruction_coordinate_source = "spatial_degrid_rcc_corrected" if spatial_degrid else "degrid_rcc_corrected"
     quality_summary = None
     if bool(args.quality_metrics):
         quality_script = args.infer_recon_root / "quality_enrich_h5.py"
@@ -743,6 +930,10 @@ def run_side(
             str(args.render_pixel_nm),
             "--spot-radius-nm",
             str(args.spot_radius_nm),
+            "--z-min-nm",
+            str(args.z_min_nm),
+            "--z-max-nm",
+            str(args.z_max_nm),
             "--renderer",
             "integrated_gaussian",
             "--gamma",
@@ -755,7 +946,6 @@ def run_side(
             str(args.radius_mode),
             "--filtered-format",
             "h5",
-            "--keep-filtered-predictions",
         ]
         if args.display_imax is not None:
             cmd.extend(["--display-imax", str(args.display_imax)])
@@ -781,6 +971,13 @@ def run_side(
                 "filter_summary": str(filter_dir / "filter_summary.json"),
             }
         )
+    removed_intermediates = []
+    corrected_predictions = infer_dir / "predictions_degrid_rcc_corrected.h5"
+    if corrected_predictions.is_file():
+        for intermediate in (infer_dir / "predictions_raw.h5", infer_dir / "predictions_degrid.h5"):
+            if intermediate.is_file():
+                intermediate.unlink()
+                removed_intermediates.append(str(intermediate))
     summary = {
         "side": side,
         "predictions": str(pred_path),
@@ -803,11 +1000,14 @@ def run_side(
         "degrid_summary": str(degrid_summary) if degrid_summary is not None else None,
         "degrid": degrid_payload,
         "rcc_drift_enabled": bool(args.rcc_drift),
-        "rcc_predictions": str(infer_dir / "predictions_degrid_rcc_corrected.h5") if bool(args.rcc_drift) else None,
+        "rcc_applied": rcc_applied,
+        "rcc_predictions": str(infer_dir / "predictions_degrid_rcc_corrected.h5") if rcc_applied else None,
         "rcc_summary": str(rcc_summary) if rcc_summary is not None else None,
         "rcc_frame_block_size": int(args.rcc_frame_block_size),
         "reconstruction_coordinate_source": reconstruction_coordinate_source,
         "reconstruction_predictions": str(pred_for_filter),
+        "intermediate_cleanup": "after_successful_filter_reconstruction",
+        "removed_intermediates": removed_intermediates,
         "filter_recon_dir": filter_runs[-1]["filter_recon_dir"] if filter_runs else None,
         "filter_runs": filter_runs,
         "raw_rows": int(total_rows),
@@ -831,7 +1031,13 @@ def main() -> int:
     assert_output_dir_available(args.output_dir, overwrite=bool(args.overwrite_output))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint = args.checkpoint or (args.run_dir / "checkpoints/checkpoint_latest.pt")
-    coeff_maps = final_coeff_maps(args.run_dir)
+    if args.coeff_map is None:
+        coeff_maps = final_coeff_maps(args.run_dir)
+    else:
+        coeff_map = args.coeff_map.resolve()
+        if not coeff_map.is_file():
+            raise FileNotFoundError(coeff_map)
+        coeff_maps = {"double_helix": coeff_map}
     if args.right_coeff_map is not None:
         coeff_maps["right"] = args.right_coeff_map.resolve()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -850,7 +1056,25 @@ def main() -> int:
     )
     if device.type != "cuda":
         raise RuntimeError("Formal 3371 infer requires CUDA; refusing CPU fallback.")
-    model, runtime = load_model(args.config, checkpoint, device)
+    model, runtime, checkpoint_payload = load_model(args.config, checkpoint, device)
+    pairing = (
+        physical_pairing_metadata(checkpoint_payload, load_current_physical_state(args.run_dir))
+        if args.coeff_map is None
+        else {
+            "contract": "fixed_external_optical_state_for_direct_emitter_control",
+            "coeff_maps": {
+                "double_helix": {
+                    "path": str(coeff_maps["double_helix"]),
+                    "sha256": sha256_file(coeff_maps["double_helix"]),
+                }
+            },
+        }
+    )
+    runtime_domain_count = int(runtime["batch_provider"]["params"]["domain_count"])
+    if int(args.domain_count) != runtime_domain_count:
+        raise ValueError(
+            f"CLI domain_count={int(args.domain_count)} does not match checkpoint runtime domain_count={runtime_domain_count}"
+        )
     frame_proc = None
     if str(args.input_preprocess) == "fd_deeploc_recenter":
         frame_proc = build_inference_frame_normalizer(load_config(args.config))
@@ -865,7 +1089,7 @@ def main() -> int:
                     model=model,
                     runtime=runtime,
                     device=device,
-                    coeff_map=coeff_maps["left"],
+                    coeff_map=resolve_coeff_map(coeff_maps, side="left", domain_count=int(args.domain_count)),
                     crop_left=int(args.left_crop_left),
                     crop_top=int(args.left_crop_top),
                     crop_width=int(args.left_crop_width),
@@ -883,7 +1107,7 @@ def main() -> int:
                     model=model,
                     runtime=runtime,
                     device=device,
-                    coeff_map=coeff_maps["right"],
+                    coeff_map=resolve_coeff_map(coeff_maps, side="right", domain_count=int(args.domain_count)),
                     crop_left=int(args.right_crop_left),
                     crop_top=int(args.right_crop_top),
                     crop_width=int(args.right_crop_width),
@@ -896,6 +1120,7 @@ def main() -> int:
     manifest = {
         "standard": "neptune_v03_3371_full8000_infer_filter_recon_roi96_valid80_v0.1",
         "checkpoint": str(checkpoint),
+        "physical_pairing": pairing,
         "run_dir": str(args.run_dir),
         "sample_tiff": str(args.sample_tiff),
         "sides": summaries,

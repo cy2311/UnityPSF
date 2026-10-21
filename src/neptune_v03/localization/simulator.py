@@ -9,6 +9,7 @@ from neptune_v03.localization.smlm_targets import V03_PXYZ_TARGET_ORDER, V03_PXY
 from neptune_v03.localization.training_adapter import LocalizationTrainBatch
 from neptune_v03.optics.vector_psf import VectorPSFParams, build_vector_psf_context, noll_to_nm, render_vector_psf_bank
 from neptune_v03.runtime.profiling import time_block
+from neptune_v03.localization.cuda_gemm_renderer import CudaGemmRenderer
 
 
 @dataclass(frozen=True)
@@ -47,7 +48,9 @@ class LocalizationSimulatorConfig:
     field_origin_xy: tuple[int, int] = (0, 0)
     coeff_maps_nm: torch.Tensor | None = None
     coeff_mode_order: tuple[tuple[int, int], ...] = ()
+    pupil_carrier_complex: torch.Tensor | None = None
     output_device: str = "cpu"
+    simulation_backend: str = "native"
 
 
 def simulate_localization_batch(
@@ -210,6 +213,12 @@ class _VectorEmitterRenderer:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.device = device
         self.maps_nm = self.maps_nm.to(device=self.device)
+        self.pupil_carrier_complex = None
+        if config.pupil_carrier_complex is not None:
+            carrier = config.pupil_carrier_complex
+            if carrier.ndim != 2 or tuple(carrier.shape) != (int(config.npupil), int(config.npupil)):
+                raise ValueError("pupil_carrier_complex must match the configured pupil sampling")
+            self.pupil_carrier_complex = carrier.to(device=self.device, dtype=torch.complex64).contiguous()
         self.ctx = build_vector_psf_context(
             NA=float(config.na),
             wavelength_nm=float(config.wavelength_nm),
@@ -229,6 +238,9 @@ class _VectorEmitterRenderer:
             ),
             device=device,
         )
+        self.cuda_renderer = None
+        if str(config.simulation_backend).strip().lower() == "cuda_gemm":
+            self.cuda_renderer = CudaGemmRenderer(self.ctx)
 
     def render_many(
         self,
@@ -248,13 +260,18 @@ class _VectorEmitterRenderer:
             photons=photons,
             field_origin_xy=field_origin_xy,
         )
-        return _place_patches(
-            patches.detach(),
-            height=height,
-            width=width,
-            center_x=center_x.detach(),
-            center_y=center_y.detach(),
-        )
+        if self.cuda_renderer is not None:
+            return self.cuda_renderer.reduce_frames(
+                patches.detach(),
+                frame_indices=torch.zeros_like(center_x),
+                center_x=center_x.detach(),
+                center_y=center_y.detach(),
+                frame_count=1,
+                height=height,
+                width=width,
+                background=0.0,
+            )[0]
+        return _place_patches(patches.detach(), height=height, width=width, center_x=center_x.detach(), center_y=center_y.detach())
 
     def render_frames(
         self,
@@ -276,6 +293,17 @@ class _VectorEmitterRenderer:
             photons=photons,
             field_origin_xy=field_origin_xy,
         )
+        if self.cuda_renderer is not None:
+            return self.cuda_renderer.reduce_frames(
+                patches.detach(),
+                frame_indices=frame_indices,
+                center_x=center_x.detach(),
+                center_y=center_y.detach(),
+                frame_count=int(frame_count),
+                height=height,
+                width=width,
+                background=0.0,
+            )
         return _place_patches_frames(
             patches.detach(),
             frame_count=int(frame_count),
@@ -305,14 +333,18 @@ class _VectorEmitterRenderer:
         coeffs_nm = self.maps_nm[:, rows, cols].transpose(0, 1).contiguous()
         coeffs_rad = coeffs_nm * (2.0 * math.pi / max(float(self.config.wavelength_nm), 1e-6)) * self.ctx.normfac[None, :]
         with time_block("render_vector_patches"):
-            patches = render_vector_psf_bank(
-                self.ctx,
-                coeffs_rad,
-                z_t * 1e-6,
-                out_size=int(self.config.vector_psf_size),
-                batch_size=int(self.config.vector_batch_size),
-                return_torch=True,
-            )
+            if self.cuda_renderer is not None:
+                patches = self.cuda_renderer.render(coeffs_rad, z_t * 1e-6, self.pupil_carrier_complex)
+            else:
+                patches = render_vector_psf_bank(
+                    self.ctx,
+                    coeffs_rad,
+                    z_t * 1e-6,
+                    pupil_carrier_complex=self.pupil_carrier_complex,
+                    out_size=int(self.config.vector_psf_size),
+                    batch_size=int(self.config.vector_batch_size),
+                    return_torch=True,
+                )
         center_x = torch.floor(xs_t).to(dtype=torch.long)
         center_y = torch.floor(ys_t).to(dtype=torch.long)
         local_x = xs_t - (center_x.to(dtype=torch.float32) + 0.5)
@@ -324,8 +356,30 @@ class _VectorEmitterRenderer:
         return patches, center_x, center_y
 
 
+_SIM_RENDERER_CACHE: dict[tuple[object, ...], _VectorEmitterRenderer] = {}
+
+
+def _sim_renderer_cache_key(config: LocalizationSimulatorConfig) -> tuple[object, ...]:
+    maps = config.coeff_maps_nm
+    carrier = config.pupil_carrier_complex
+    return (
+        None if maps is None else (int(maps.data_ptr()), tuple(int(v) for v in maps.shape), str(maps.dtype)),
+        None if carrier is None else (int(carrier.data_ptr()), tuple(int(v) for v in carrier.shape), str(carrier.dtype)),
+        str(config.simulation_backend).strip().lower(),
+        float(config.na), float(config.wavelength_nm), float(config.pixel_size_nm_x), float(config.pixel_size_nm_y),
+        int(config.npupil), int(config.vector_psf_size), float(config.refmed), float(config.refcov),
+        float(config.refimm), float(config.objstage0), None if config.zemit0 is None else float(config.zemit0),
+        tuple(float(v) for v in config.otf_rescale_xy), tuple((int(n), int(m)) for n, m in config.coeff_mode_order),
+    )
+
+
 def _build_vector_renderer(config: LocalizationSimulatorConfig) -> _VectorEmitterRenderer:
-    return _VectorEmitterRenderer(config)
+    key = _sim_renderer_cache_key(config)
+    renderer = _SIM_RENDERER_CACHE.get(key)
+    if renderer is None:
+        renderer = _VectorEmitterRenderer(config)
+        _SIM_RENDERER_CACHE[key] = renderer
+    return renderer
 
 
 def _localization_batch_to_output_device(
@@ -361,7 +415,9 @@ def _move_model_input(model_input: torch.Tensor | tuple[torch.Tensor, ...], devi
 
 
 def _noll_indices_for_modes(mode_order: tuple[tuple[int, int], ...]) -> list[int]:
-    mode_to_noll = {noll_to_nm(index): index for index in range(1, 128)}
+    # n<=20 contains 231 Zernike modes; keep the lookup above the largest
+    # supported calibration order rather than silently rejecting high orders.
+    mode_to_noll = {noll_to_nm(index): index for index in range(1, 512)}
     return [mode_to_noll[(int(n), int(m))] for n, m in mode_order]
 
 

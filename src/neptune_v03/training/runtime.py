@@ -112,6 +112,11 @@ def _build_optimizer(spec: Mapping[str, object], parameters) -> torch.optim.Opti
     if key == "sgd":
         return torch.optim.SGD(parameters, **params)
     if key == "adamw":
+        if bool(params.pop("fused", False)):
+            try:
+                return torch.optim.AdamW(parameters, fused=True, **params)
+            except (TypeError, RuntimeError):
+                raise RuntimeError("fused AdamW requested but this PyTorch/CUDA build does not support it")
         return torch.optim.AdamW(parameters, **params)
     raise ValueError(f"unknown optimizer: {name}")
 

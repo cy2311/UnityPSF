@@ -16,6 +16,7 @@ def build_roi_batch_provider(
     condition_providers_by_domain: dict[str, FullResZernikeConditioning] | None = None,
     append_domain_onehot: bool = False,
     domain_names: tuple[str, ...] | list[str] | None = None,
+    condition_feature_dim: int | None = None,
 ):
     records = tuple(bank.records)
     domain_order = tuple(str(name) for name in (domain_names or _bank_domain_order(records)))
@@ -35,6 +36,7 @@ def build_roi_batch_provider(
                         condition_providers_by_domain=condition_providers_by_domain,
                         append_domain_onehot=append_domain_onehot,
                         domain_names=domain_order,
+                        condition_feature_dim=condition_feature_dim,
                     )
                 )
             )
@@ -51,6 +53,7 @@ def _records_to_localization_batch(
     condition_providers_by_domain: dict[str, FullResZernikeConditioning] | None = None,
     append_domain_onehot: bool = False,
     domain_names: tuple[str, ...] = (),
+    condition_feature_dim: int | None = None,
 ) -> LocalizationTrainBatch:
     if not records:
         raise ValueError("ROI batch requires at least one record")
@@ -77,6 +80,7 @@ def _records_to_localization_batch(
             providers=condition_providers_by_domain,
             append_domain_onehot=append_domain_onehot,
             domain_names=domain_names,
+            condition_feature_dim=condition_feature_dim,
         )
         model_input_payload = (model_input, condition)
     return LocalizationTrainBatch(
@@ -138,13 +142,25 @@ def _condition_batch_for_records(
     providers: dict[str, FullResZernikeConditioning],
     append_domain_onehot: bool,
     domain_names: tuple[str, ...],
+    condition_feature_dim: int | None,
 ) -> torch.Tensor:
     conditions = []
     height, width = int(model_input.shape[-2]), int(model_input.shape[-1])
     domain_to_index = {name: idx for idx, name in enumerate(domain_names)}
     for record in records:
         domain_name = str(record.domain_name)
-        provider = providers[domain_name]
+        # Auto-built ROI banks may use the synthetic ``auto`` domain label
+        # while a single field-conditioning provider is registered. In that
+        # case the sole provider is the intended default; retain strict
+        # per-domain lookup when multiple providers are configured.
+        provider = providers.get(domain_name)
+        if provider is None and len(providers) == 1:
+            provider = next(iter(providers.values()))
+        if provider is None:
+            raise KeyError(
+                f"No conditioning provider for ROI domain {domain_name!r}; "
+                f"available domains={tuple(providers)}"
+            )
         x0, y0 = _condition_origin_for_record(record)
         condition = provider.condition_vector_from_xy(
             x0=x0,
@@ -154,9 +170,25 @@ def _condition_batch_for_records(
             device=model_input.device,
             dtype=model_input.dtype,
         )
+        if condition_feature_dim is not None:
+            target = int(condition_feature_dim)
+            if target < int(condition.shape[0]):
+                condition = condition[:target]
+            elif target > int(condition.shape[0]):
+                padded = torch.zeros((target,), dtype=condition.dtype, device=condition.device)
+                padded[: int(condition.shape[0])] = condition
+                condition = padded
         if append_domain_onehot:
             onehot = torch.zeros((len(domain_names),), dtype=model_input.dtype, device=model_input.device)
-            onehot[domain_to_index[domain_name]] = 1.0
+            domain_index = domain_to_index.get(domain_name)
+            if domain_index is None and len(providers) == 1 and len(domain_names) == 1:
+                domain_index = 0
+            if domain_index is None:
+                raise KeyError(
+                    f"No one-hot index for ROI domain {domain_name!r}; "
+                    f"configured domain_names={domain_names!r}"
+                )
+            onehot[domain_index] = 1.0
             condition = torch.cat((condition, onehot), dim=0)
         conditions.append(condition)
     return torch.stack(conditions, dim=0).contiguous()

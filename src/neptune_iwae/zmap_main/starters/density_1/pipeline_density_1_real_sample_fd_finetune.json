@@ -1,0 +1,192 @@
+{
+  "$schema": "./pipeline.schema.json",
+  "schema_version": "0.1",
+  "optical": {
+    "NA": 1.4,
+    "pixel_size_nm_x": 101.11,
+    "pixel_size_nm_y": 98.83,
+    "wavelength_nm": 660,
+    "n_medium": 1.518
+  },
+  "camera": {
+    "qe": 0.9,
+    "read_sigma": 0,
+    "spurious_charge": 0.002,
+    "em_gain": 1.0,
+    "e_per_adu": 1.020784562122306,
+    "baseline": 398.6
+  },
+  "phase_retrieval": {
+    "backend": "simulator_diff",
+    "simulator_diff": {
+      "normalize_coeffs": false,
+      "zernike": {
+        "noll_start": 4,
+        "noll_end": 12,
+        "ncc_thresh": 0.8
+      }
+    },
+    "pupil": {
+      "n_pixels": 128
+    },
+    "input": {
+      "tiff_path": "datasets/raw_samples/sample/spool_800mW_30ms_3D_7_1_MMStack_Default.ome.tif"
+    }
+  },
+  "simulation": {
+    "use_gpu": true,
+    "gpu_id": 0,
+    "background_uniform": [
+      0.0,
+      46.50018560779394
+    ],
+    "emitter": {
+      "emitter_extent": [
+        [
+          -0.5,
+          63.5
+        ],
+        [
+          -0.5,
+          63.5
+        ],
+        [
+          -0.6,
+          0.6
+        ]
+      ],
+      "field_extent": [
+        [
+          0,
+          64
+        ],
+        [
+          0,
+          64
+        ]
+      ],
+      "z_range": [
+        -0.6,
+        0.6
+      ],
+      "intensity_mu_sig": [
+        20000.0,
+        1000.0
+      ],
+      "intensity_clip": [
+        0.0,
+        31000.0
+      ],
+      "lifetime_avg": 1.0,
+      "orientation": {
+        "enabled": false,
+        "theta_range_deg": [
+          0,
+          90
+        ],
+        "phi_range_deg": [
+          0,
+          360
+        ],
+        "sample_mode": "uniform_cos"
+      }
+    },
+    "simulation": {
+      "random_seed": 42
+    },
+    "profiles": {
+      "train": {
+        "frames_per_sample": 256,
+        "num_samples": 1,
+        "num_emitters": 5700,
+        "n_max": 256,
+        "use_gpu": true,
+        "gpu_id": 0
+      },
+      "eval": {
+        "frames_per_sample": 128,
+        "num_samples": 1,
+        "num_emitters": 2850,
+        "n_max": 256,
+        "use_gpu": true,
+        "gpu_id": 0
+      }
+    },
+    "psf": {
+      "psf_type": "vector",
+      "zernike_basis_kind": "auto",
+      "amplitude_mode": "auto",
+      "vector": {
+        "npupil": 128,
+        "psf_size": 64,
+        "otf_rescale_xy": [
+          0.0,
+          0.0
+        ],
+        "refmed": 1.518,
+        "refcov": 1.518,
+        "refimm": 1.518,
+        "objstage0": 0.0,
+        "batch_size": 96,
+        "gpu_pipeline": true,
+        "psf_chunk": 20000,
+        "event_batch": 256,
+        "mean_psf": {
+          "enabled": false,
+          "ncc_thresh": 0.8,
+          "z_steps": 121
+        }
+      }
+    }
+  },
+  "train": {
+    "epochs": 300,
+    "batch_size": 32,
+    "device": "cuda:0",
+    "log_every": 0,
+    "scaling": {
+      "input_offset": 257.0,
+      "input_scale": 900.0,
+      "photon_max": 31000.0,
+      "z_max": 0.6,
+      "bg_max": 240.0
+    },
+    "regen_train_dataset_each_epoch": true,
+    "regen_eval_dataset_each_epoch": false
+  },
+  "localization_overrides": {
+    "optimizer_lr": 1.0e-5,
+    "optimizer_weight_decay": 0.0,
+    "depthwise": false
+  },
+  "fd_left_fullres_channel": {
+    "enabled": true,
+    "window_size": 3,
+    "condition_hidden_dim": 64,
+    "train_field_samples": 2,
+    "eval_field_samples": 1,
+    "coeff_maps_npz": "neptune/nat_maps/alternating_full_roi_zernike_maps_nm.npz",
+    "crop_left": 0,
+    "crop_top": 0,
+    "crop_width": 600,
+    "crop_height": 1200
+  },
+  "fd_training_schedule": {
+    "warmup_epochs": 30,
+    "warmup_lr": 3.0e-5,
+    "finetune_lr": 1.0e-5
+  },
+  "render": {
+    "pixel_size_nm": 10.0
+  },
+  "paths": {
+    "data_root": "datasets",
+    "raw_tiff_dir": "datasets/raw",
+    "phase_output_dir": "datasets/phase",
+    "phase_figures_dir": "datasets/phase/figures",
+    "seeds_dir": "datasets/seeds"
+  },
+  "metadata": {
+    "note": "Neptune locked localization NAT1000 full-res conditioning run with tile-vector FiLM adapters; warmup + full finetune."
+  }
+}

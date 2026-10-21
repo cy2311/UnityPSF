@@ -1,6 +1,7 @@
 import torch
 
 from neptune_v03.localization.legacy_decode import (
+    decode_legacy_targets,
     decode_liteloc_eval_emitters,
     decode_liteloc_formal_infer_emitters,
     liteloc_spatial_integration_probability,
@@ -100,3 +101,16 @@ def test_liteloc_decode_uses_direct_candidate_pixel_values_and_physical_units() 
     torch.testing.assert_close(emitters.sigma_xy_px, torch.tensor([[0.3, 0.4]]))
     torch.testing.assert_close(emitters.sigma_z_nm, torch.tensor([120.0]))
     torch.testing.assert_close(emitters.sigma_photons, torch.tensor([3100.0]))
+
+
+def test_v03_targets_decode_micrometer_z_to_nanometers() -> None:
+    targets = decode_legacy_targets(
+        torch.tensor([[[4.0, 5.0, 1.0, 15500.0]]]),
+        torch.tensor([[True]]),
+        target_order="v03",
+        photon_scale=31000.0,
+        z_scale=1.5,
+    )
+
+    torch.testing.assert_close(targets.xyz_px_nm, torch.tensor([[4.0, 5.0, 1000.0]]))
+    torch.testing.assert_close(targets.photons, torch.tensor([15500.0]))

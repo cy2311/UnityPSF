@@ -13,6 +13,9 @@ output/
 datasets/
 artifacts/
 tests/
+!tests/
+tests/*
+!tests/test_cuda_gemm_sequence_parity.py
 *.out
 *.err
 slurm-*.out

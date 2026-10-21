@@ -20,6 +20,8 @@ class FilterConfig:
     prob_min: float | None = None
     frame_min: int | None = None
     frame_max: int | None = None
+    emitter_z_min_nm: float | None = None
+    emitter_z_max_nm: float | None = None
     locprec_xy_nm_min: float | None = None
     locprec_xy_nm_max: float | None = None
     photon_min: float | None = None
@@ -513,6 +515,20 @@ def filter_rows(
 
         work = _filter_stage(work, predicate=_frame_ok)
     summary["after_frame"] = len(work)
+
+    if config.emitter_z_min_nm is not None or config.emitter_z_max_nm is not None:
+        def _emitter_z_ok(row: dict[str, object]) -> bool:
+            z_nm = _optional_float(row.get("z"))
+            if z_nm is None:
+                return False
+            if config.emitter_z_min_nm is not None and z_nm <= float(config.emitter_z_min_nm):
+                return False
+            if config.emitter_z_max_nm is not None and z_nm >= float(config.emitter_z_max_nm):
+                return False
+            return True
+
+        work = _filter_stage(work, predicate=_emitter_z_ok)
+    summary["after_emitter_z"] = len(work)
     quality_gate_base = list(work)
 
     if config.locprec_xy_nm_min is not None or config.locprec_xy_nm_max is not None:

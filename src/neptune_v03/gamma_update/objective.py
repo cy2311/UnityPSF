@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -27,6 +28,7 @@ class GammaProjectionObjectiveConfig:
     refcov: float = 1.518
     refimm: float = 1.518
     objstage0: float = 0.0
+    zemit0: float | None = None
     otf_rescale_xy: tuple[float, float] = (0.0, 0.0)
     renderer_batch_size: int = 128
     over_cut_px: int = 0
@@ -36,6 +38,8 @@ class GammaProjectionObjectiveConfig:
     projection_sample_batch_size: int = 16
     projection_emitter_chunk_size: int = 1024
     nat_config_kind: str = "order1"
+    pupil_carrier_complex_npz: str | None = None
+    preserve_full_base_modes: bool = False
 
 
 class GammaProjectionObjective:
@@ -70,9 +74,15 @@ class GammaProjectionObjective:
                 refcov=float(self.config.refcov),
                 refimm=float(self.config.refimm),
                 objstage0=float(self.config.objstage0),
+                zemit0=None if self.config.zemit0 is None else float(self.config.zemit0),
                 otf_rescale_xy=tuple(float(v) for v in self.config.otf_rescale_xy),
                 batch_size=int(self.config.renderer_batch_size),
             ),
+            device=self.device,
+        )
+        self.pupil_carrier_complex = _load_pupil_carrier(
+            self.config.pupil_carrier_complex_npz,
+            npupil=int(self.config.npupil),
             device=self.device,
         )
         self.last_metrics: dict[str, float] = {}
@@ -524,6 +534,7 @@ class GammaProjectionObjective:
                 self.ctx,
                 coeffs_rad,
                 z_nm.to(device=self.device, dtype=torch.float32) * 1e-9,
+                pupil_carrier_complex=self.pupil_carrier_complex,
                 out_size=int(self.config.patch_size_px),
                 batch_size=int(self.config.renderer_batch_size),
                 return_torch=True,
@@ -651,6 +662,17 @@ def _nat_aberration_noll_indices(config: NATFieldConfig) -> tuple[int, ...]:
     for noll_index in range(1, 128):
         mode_to_noll[noll_to_nm(noll_index)] = noll_index
     return tuple(mode_to_noll[mode] for mode in config.aberrations)
+
+
+def _load_pupil_carrier(path: str | None, *, npupil: int, device: torch.device) -> torch.Tensor | None:
+    if path is None:
+        return None
+    with np.load(Path(path), allow_pickle=False) as payload:
+        key = "carrier_complex" if "carrier_complex" in payload else "complex_pupil"
+        carrier = torch.as_tensor(np.asarray(payload[key], dtype=np.complex64), device=device)
+    if tuple(carrier.shape) != (int(npupil), int(npupil)):
+        raise ValueError("pupil carrier must match the gamma objective pupil sampling")
+    return carrier.contiguous()
 
 
 def _load_base_coeff_maps(

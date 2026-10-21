@@ -61,6 +61,7 @@ class ROIBankBuildConfig:
     origin_mode: str = "emitter_centered"
     origin_stride_px: int | None = None
     valid_core_size_px: int | None = None
+    infer_on_raw_adu: bool = False
 
 
 InferFn = Callable[..., RawInferenceResult]
@@ -98,6 +99,7 @@ def build_roi_bank_from_inference(
             origin_mode=cfg.origin_mode,
             origin_stride_px=cfg.origin_stride_px,
             valid_core_size_px=cfg.valid_core_size_px,
+            infer_on_raw_adu=cfg.infer_on_raw_adu,
         )
     else:
         frame_count = int(frames.shape[0])
@@ -115,6 +117,7 @@ def build_roi_bank_from_inference(
         if domain_camera_backward is not None:
             camera_backward_by_domain[str(domain.name)] = domain_camera_backward
         domain_frames = _camera_backward_photons(domain_frames_adu, domain_camera_backward)
+        inference_frames = domain_frames_adu if cfg.infer_on_raw_adu else domain_frames
         domain_candidates = []
         candidate_context: dict[int, tuple[ROIBankDomain, tuple[int, int], RawInferenceResult]] = {}
         next_candidate_id = 0
@@ -122,7 +125,7 @@ def build_roi_bank_from_inference(
             result = infer_fn(
                 domain=domain,
                 frame_window=window,
-                raw_domain_frames_photon=domain_frames[window[0] : window[1]],
+                raw_domain_frames_photon=inference_frames[window[0] : window[1]],
             )
             emitters = tuple(
                 e for e in result.emitters if float(e.probability) >= float(cfg.candidate_probability_threshold)
@@ -187,6 +190,7 @@ def build_roi_bank_from_inference(
             "origin_mode": str(cfg.origin_mode),
             "origin_stride_px": None if cfg.origin_stride_px is None else int(cfg.origin_stride_px),
             "valid_core_size_px": None if cfg.valid_core_size_px is None else int(cfg.valid_core_size_px),
+            "infer_on_raw_adu": bool(cfg.infer_on_raw_adu),
             "origin_bank_size": _origin_bank_size(cfg, domains=domains),
         },
         metadata={
@@ -410,9 +414,21 @@ def _load_raw_domain_frames(
             raise ValueError(f"Domain {domain.name!r} crop exceeds raw frame bounds {(frame_height, frame_width)}")
         crops = []
         chunk = 16
+        # A contiguous TYX stack may be stored as one TIFF page. In that
+        # layout `key=range(...)` indexes pages, not frames; memory-map the
+        # single page and slice the frame axis instead of loading 20 GB at once.
+        mapped = None
+        if len(tif.pages) == 1 and len(series_shape) == 3:
+            try:
+                mapped = tifffile.memmap(str(raw_frames_photon), series=0, mode="r")
+            except (ValueError, OSError):
+                mapped = None
         for chunk_start in range(start, stop, chunk):
             chunk_stop = min(stop, chunk_start + chunk)
-            frames = np.asarray(tif.series[0].asarray(key=range(chunk_start, chunk_stop)), dtype=np.float32)
+            if mapped is not None:
+                frames = np.asarray(mapped[chunk_start:chunk_stop], dtype=np.float32)
+            else:
+                frames = np.asarray(tif.series[0].asarray(key=range(chunk_start, chunk_stop)), dtype=np.float32)
             frames = np.squeeze(frames)
             if frames.ndim == 2:
                 frames = frames[None, ...]

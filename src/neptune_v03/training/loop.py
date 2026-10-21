@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import itertools
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -123,19 +124,31 @@ def train_one_epoch(
     batch_iter = iter(batches)
     step = 0
     while True:
+        simulation_start = time.perf_counter()
         with profiling.time_block("online_simulation_total"):
             try:
                 batch = next(batch_iter)
             except StopIteration:
                 break
+        if device_type == "cuda":
+            torch.cuda.synchronize()
+        simulation_ms = (time.perf_counter() - simulation_start) * 1000.0
         step += 1
         optimizer.zero_grad(set_to_none=True)
+        forward_start = time.perf_counter()
         with torch.autocast(device_type="cuda", dtype=config.amp_dtype, enabled=autocast_enabled):
             loss = compute_loss(model, batch)
+        if device_type == "cuda":
+            torch.cuda.synchronize()
+        forward_ms = (time.perf_counter() - forward_start) * 1000.0
+        backward_start = time.perf_counter()
         if scaler_enabled:
             scaler.scale(loss).backward()
         else:
             loss.backward()
+        if device_type == "cuda":
+            torch.cuda.synchronize()
+        backward_ms = (time.perf_counter() - backward_start) * 1000.0
         if scaler_enabled:
             scaler.unscale_(optimizer)
         if config.grad_clip_norm is not None:
@@ -156,7 +169,14 @@ def train_one_epoch(
             "step": step,
             "global_step": config.global_step_start + step,
             "loss": loss_value,
+            "simulation_ms": simulation_ms,
+            "model_forward_ms": forward_ms,
+            "backward_ms": backward_ms,
         }
+        if device_type == "cuda":
+            metric_row["gpu_memory_allocated_mb"] = torch.cuda.memory_allocated() / (1024.0 * 1024.0)
+            metric_row["gpu_memory_reserved_mb"] = torch.cuda.memory_reserved() / (1024.0 * 1024.0)
+            metric_row["gpu_peak_memory_allocated_mb"] = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)
         metric_row.update(profiling.drain())
         _append_jsonl(
             metrics_path,
@@ -262,6 +282,7 @@ def train_epochs(
         )
         global_step = epoch_result.global_step
         trained_batches += int(epoch_result.step_count)
+        validation_checkpoint_start = time.perf_counter()
         if scheduler is not None and config.scheduler_step_unit == "epoch":
             scheduler.step()
             _save_checkpoint(
@@ -311,6 +332,12 @@ def train_epochs(
                     extra={**_checkpoint_extra(checkpoint_extra_fn), "eval_loss": eval_loss},
                 )
             current_best_path = best_checkpoint_path
+
+        if _model_device_type(model) == "cuda":
+            torch.cuda.synchronize()
+        validation_checkpoint_ms = (time.perf_counter() - validation_checkpoint_start) * 1000.0
+        with (layout.metrics_dir / "training_timing.jsonl").open("a", encoding="utf-8") as timing_file:
+            timing_file.write(json.dumps({"epoch": int(epoch), "global_step": int(global_step), "validation_checkpoint_ms": validation_checkpoint_ms}) + "\n")
 
         result = TrainingRunEpochResult(
             epoch=epoch_result.epoch,
@@ -392,7 +419,7 @@ def _aggregate_eval_metrics(loss_fn: LossFn | None):
 
 
 def _training_core_metrics_row(metric_row: Mapping[str, object]) -> dict[str, object]:
-    core_keys = ("global_step", "loss")
+    core_keys = ("epoch", "step", "global_step", "loss", "simulation_ms", "model_forward_ms", "backward_ms", "gpu_memory_allocated_mb", "gpu_memory_reserved_mb", "gpu_peak_memory_allocated_mb")
     row = {key: metric_row[key] for key in core_keys if key in metric_row}
     row.update({key: value for key, value in metric_row.items() if str(key).startswith("profile_")})
     return row
@@ -400,6 +427,7 @@ def _training_core_metrics_row(metric_row: Mapping[str, object]) -> dict[str, ob
 
 def _eval_core_metrics_row(eval_row: Mapping[str, object]) -> dict[str, object]:
     core_keys = (
+        "epoch",
         "global_step",
         "eval_loss",
         "jaccard",
@@ -409,6 +437,28 @@ def _eval_core_metrics_row(eval_row: Mapping[str, object]) -> dict[str, object]:
         "precision",
         "predicted_emitters",
         "target_emitters",
+        "lobe_jaccard",
+        "lobe_rmse_x_px",
+        "lobe_rmse_y_px",
+        "lobe_rmse_xy_px",
+        "lobe_rmse_x_nm",
+        "lobe_rmse_y_nm",
+        "lobe_rmse_xy_nm",
+        "lobe_precision",
+        "lobe_recall",
+        "lobe_predicted",
+        "lobe_target",
+        "lobe_true_positive",
+        "lobe_false_positive",
+        "lobe_false_negative",
+        "x_rmse_nm",
+        "y_rmse_nm",
+        "rmse_x",
+        "rmse_y",
+        "lobe_match_tolerance_px",
+        "lobe_probability_threshold",
+        "lobe_pixel_size_nm_x",
+        "lobe_pixel_size_nm_y",
     )
     return {key: eval_row[key] for key in core_keys if key in eval_row}
 

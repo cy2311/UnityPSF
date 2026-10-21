@@ -45,6 +45,16 @@ class LegacyEvalMetrics:
         }
 
 
+@dataclass(frozen=True)
+class LegacyLocalizationMatches:
+    matched_prediction_indices: tuple[int, ...]
+    matched_target_indices: tuple[int, ...]
+    lateral_sq_errors_nm2: tuple[float, ...]
+    axial_sq_errors_nm2: tuple[float, ...]
+    unmatched_prediction_indices: tuple[int, ...]
+    unmatched_target_indices: tuple[int, ...]
+
+
 def liteloc_spatial_integration_probability(p: torch.Tensor) -> torch.Tensor:
     if p.ndim != 3:
         raise ValueError(f"p must have shape (N,H,W), got {tuple(p.shape)}")
@@ -185,7 +195,7 @@ def decode_legacy_targets(
     elif order in {"v03", "xyzph", "x,y,z,phot", "x_y_z_photons"}:
         x = values[:, 0]
         y = values[:, 1]
-        z = values[:, 2]
+        z = values[:, 2] * 1000.0
         photons = values[:, 3]
     else:
         raise ValueError(f"unsupported target_order: {target_order!r}")
@@ -211,13 +221,52 @@ def evaluate_legacy_localizations(
     pixel_size_nm_y: float = 1.0,
     match_dims: int = 2,
 ) -> LegacyEvalMetrics:
+    matches = match_legacy_localizations(
+        pred,
+        target,
+        dist_tol_xy_px=dist_tol_xy_px,
+        dist_tol_xy_nm=dist_tol_xy_nm,
+        dist_tol_z_nm=dist_tol_z_nm,
+        pixel_size_nm_x=pixel_size_nm_x,
+        pixel_size_nm_y=pixel_size_nm_y,
+        match_dims=match_dims,
+    )
+    true_positive = len(matches.matched_prediction_indices)
+    false_positive = len(matches.unmatched_prediction_indices)
+    false_negative = len(matches.unmatched_target_indices)
+    precision = true_positive / max(true_positive + false_positive, 1)
+    recall = true_positive / max(true_positive + false_negative, 1)
+    jaccard = true_positive / max(true_positive + false_positive + false_negative, 1)
+    rmse_lat = (sum(matches.lateral_sq_errors_nm2) / max(true_positive, 1)) ** 0.5
+    rmse_ax = (sum(matches.axial_sq_errors_nm2) / max(true_positive, 1)) ** 0.5
+    return LegacyEvalMetrics(
+        precision=float(precision),
+        recall=float(recall),
+        jaccard=float(jaccard),
+        rmse_lat=float(rmse_lat),
+        rmse_ax=float(rmse_ax),
+        predicted_emitters=float(true_positive + false_positive),
+        target_emitters=float(true_positive + false_negative),
+    )
+
+
+def match_legacy_localizations(
+    pred: LegacyEmitterSet,
+    target: LegacyEmitterSet,
+    *,
+    dist_tol_xy_px: float | None = 1.0,
+    dist_tol_xy_nm: float | None = None,
+    dist_tol_z_nm: float | None = None,
+    pixel_size_nm_x: float = 1.0,
+    pixel_size_nm_y: float = 1.0,
+    match_dims: int = 2,
+) -> LegacyLocalizationMatches:
     if int(match_dims) not in {2, 3}:
         raise ValueError(f"match_dims must be 2 or 3, got {match_dims!r}")
-    true_positive = 0
-    lateral_sq_errors: list[float] = []
-    axial_sq_errors: list[float] = []
-    pred_count = int(pred.xyz_px_nm.shape[0])
-    target_count = int(target.xyz_px_nm.shape[0])
+    matched_prediction_indices: list[int] = []
+    matched_target_indices: list[int] = []
+    lateral_sq_errors_nm2: list[float] = []
+    axial_sq_errors_nm2: list[float] = []
     for batch in sorted(set(pred.batch_index.tolist()) | set(target.batch_index.tolist())):
         pred_ix = (pred.batch_index == int(batch)).nonzero(as_tuple=False).flatten()
         target_ix = (target.batch_index == int(batch)).nonzero(as_tuple=False).flatten()
@@ -246,26 +295,25 @@ def evaluate_legacy_localizations(
         for _, pi, ti, lat_sq, ax_sq in sorted(candidates, key=lambda item: item[0]):
             if int(pi) in matched_predictions or int(ti) in matched_targets:
                 continue
-            true_positive += 1
             matched_predictions.add(int(pi))
             matched_targets.add(int(ti))
-            lateral_sq_errors.append(float(lat_sq))
-            axial_sq_errors.append(float(ax_sq))
-    false_positive = pred_count - true_positive
-    false_negative = target_count - true_positive
-    precision = true_positive / max(true_positive + false_positive, 1)
-    recall = true_positive / max(true_positive + false_negative, 1)
-    jaccard = true_positive / max(true_positive + false_positive + false_negative, 1)
-    rmse_lat = (sum(lateral_sq_errors) / max(len(lateral_sq_errors), 1)) ** 0.5
-    rmse_ax = (sum(axial_sq_errors) / max(len(axial_sq_errors), 1)) ** 0.5
-    return LegacyEvalMetrics(
-        precision=float(precision),
-        recall=float(recall),
-        jaccard=float(jaccard),
-        rmse_lat=float(rmse_lat),
-        rmse_ax=float(rmse_ax),
-        predicted_emitters=float(pred_count),
-        target_emitters=float(target_count),
+            matched_prediction_indices.append(int(pi))
+            matched_target_indices.append(int(ti))
+            lateral_sq_errors_nm2.append(float(lat_sq))
+            axial_sq_errors_nm2.append(float(ax_sq))
+    matched_prediction_set = set(matched_prediction_indices)
+    matched_target_set = set(matched_target_indices)
+    return LegacyLocalizationMatches(
+        matched_prediction_indices=tuple(matched_prediction_indices),
+        matched_target_indices=tuple(matched_target_indices),
+        lateral_sq_errors_nm2=tuple(lateral_sq_errors_nm2),
+        axial_sq_errors_nm2=tuple(axial_sq_errors_nm2),
+        unmatched_prediction_indices=tuple(
+            index for index in range(int(pred.xyz_px_nm.shape[0])) if index not in matched_prediction_set
+        ),
+        unmatched_target_indices=tuple(
+            index for index in range(int(target.xyz_px_nm.shape[0])) if index not in matched_target_set
+        ),
     )
 
 
@@ -288,9 +336,11 @@ __all__ = [
     "LITELOC_FORMAL_INFER_THRESHOLD",
     "LegacyEmitterSet",
     "LegacyEvalMetrics",
+    "LegacyLocalizationMatches",
     "decode_liteloc_eval_emitters",
     "decode_liteloc_formal_infer_emitters",
     "decode_legacy_targets",
     "evaluate_legacy_localizations",
     "liteloc_spatial_integration_probability",
+    "match_legacy_localizations",
 ]

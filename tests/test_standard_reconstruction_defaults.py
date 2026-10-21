@@ -2,6 +2,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 from neptune_v03.infer_recon.filter import apply_filter_recon
 from neptune_v03.infer_recon.recon import render_standard, render_subpixel
 
@@ -56,6 +58,7 @@ def test_python_entry_points_default_to_smap_style_reconstruction(monkeypatch, t
     assert subpixel_args.display_mode == "quantile"
     assert subpixel_args.display_imax_min == -2.5228787452803374
     assert subpixel_args.gamma == 1.0
+    assert subpixel_args.save_colorbar is False
 
     monkeypatch.setattr(
         sys,
@@ -70,6 +73,8 @@ def test_python_entry_points_default_to_smap_style_reconstruction(monkeypatch, t
     assert filter_args.render_weight == "count"
     assert filter_args.display_mode == "quantile"
     assert filter_args.display_imax_min == -2.5228787452803374
+    assert filter_args.emitter_z_min_nm is None
+    assert filter_args.emitter_z_max_nm is None
 
 
 def test_formal_infer_and_standard_wrappers_use_same_defaults(monkeypatch, tmp_path) -> None:
@@ -136,6 +141,9 @@ def test_dual_and_compatibility_entries_do_not_restore_old_defaults(monkeypatch,
     assert args.display_mode == "quantile"
     assert args.display_imax_min == -2.5228787452803374
     assert args.gamma == 1.0
+    assert args.emitter_z_min_nm is None
+    assert args.emitter_z_max_nm is None
+    assert args.save_ratio_map is False
 
     for relative_path in (
         "scripts/infer/run_3371_full8000_infer_filter_recon.sbatch",
@@ -143,3 +151,62 @@ def test_dual_and_compatibility_entries_do_not_restore_old_defaults(monkeypatch,
     ):
         wrapper = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
         assert "${FILTER_PROB_MIN:-0.70}" in wrapper
+
+    formal_source = (PROJECT_ROOT / "scripts/infer/run_3371_full8000_infer_filter_recon.py").read_text(encoding="utf-8")
+    reprocess_source = (PROJECT_ROOT / "scripts/infer/reprocess_existing_predictions_current_standard.sbatch").read_text(
+        encoding="utf-8"
+    )
+    assert '"--keep-filtered-predictions"' not in formal_source
+    assert "--keep-filtered-predictions" not in reprocess_source
+
+
+def test_reconstruction_entries_reject_removed_linear_float32_outputs(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "render_subpixel",
+            "--predictions",
+            "p.h5",
+            "--output-dir",
+            "out",
+            "--width-px",
+            "1",
+            "--height-px",
+            "1",
+            "--camera-pixel-nm-x",
+            "100",
+            "--camera-pixel-nm-y",
+            "100",
+            "--save-linear-outputs",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        render_subpixel._parse_args()
+
+    module = _load_dual_renderer_module()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "dual_renderer",
+            "--left-predictions",
+            "left.h5",
+            "--right-predictions",
+            "right.h5",
+            "--output-dir",
+            str(tmp_path),
+            "--save-linear-outputs",
+        ],
+    )
+    with pytest.raises(SystemExit):
+        module.parse_args()
+
+    sources = [
+        PROJECT_ROOT / "src/neptune_v03/infer_recon/recon/render_subpixel.py",
+        PROJECT_ROOT / "scripts/infer/render_union_raw_ratio_bicolor.py",
+    ]
+    for source in sources:
+        text = source.read_text(encoding="utf-8")
+        assert "_density_linear_float32.tiff" not in text
+        assert "_rgb_linear_float32.tiff" not in text

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import torch
 import torch.nn as nn
@@ -83,42 +84,30 @@ class LocalVectorPSFTorchFit:
 
     @staticmethod
     def get_zernike(orders, xpupil, ypupil, device):
-        xpupil = torch.real(xpupil)
-        ypupil = torch.real(ypupil)
-        nzer = orders.shape[0]
-        radormax = int(torch.max(orders[:, 0]).item())
-        azormax = int(torch.max(torch.abs(orders[:, 1])).item())
-        nx, ny = xpupil.shape
-        zerpol = torch.zeros([21, 6, nx, ny], device=device)
-        rhosq = xpupil**2 + ypupil**2
-        rho = torch.sqrt(rhosq)
-        zerpol[0, 0, :, :] = torch.ones_like(xpupil)
-
-        for jm in range(1, azormax + 3):
-            m = jm - 1
-            if m > 0:
-                zerpol[jm - 1, jm - 1, :, :] = rho * zerpol[jm - 2, jm - 2, :, :]
-            zerpol[jm + 1, jm - 1, :, :] = ((m + 2) * rhosq - m - 1) * zerpol[jm - 1, jm - 1, :, :]
-            for p in range(2, radormax - m + 3):
-                n = m + 2 * p
-                jn = n + 1
-                zerpol[jn - 1, jm - 1, :, :] = (
-                    2
-                    * (n - 1)
-                    * (n * (n - 2) * (2 * rhosq - 1) - m**2)
-                    * zerpol[jn - 3, jm - 1, :, :]
-                    - n * (n + m - 2) * (n - m - 2) * zerpol[jn - 5, jm - 1, :, :]
-                ) / ((n - 2) * (n + m) * (n - m))
-
-        phi = torch.atan2(ypupil, xpupil)
-        allzernikes = torch.zeros([nzer, nx, ny], device=device)
-        for j in range(1, nzer + 1):
-            n = int(orders[j - 1, 0].item())
-            m = int(orders[j - 1, 1].item())
-            if m >= 0:
-                allzernikes[j - 1, :, :] = zerpol[n, m, :, :] * torch.cos(m * phi)
-            else:
-                allzernikes[j - 1, :, :] = zerpol[n, -m, :, :] * torch.sin(-m * phi)
+        x = torch.real(xpupil).to(device=device)
+        y = torch.real(ypupil).to(device=device)
+        rho = torch.sqrt(x.square() + y.square())
+        phi = torch.atan2(y, x)
+        allzernikes = torch.empty(
+            (int(orders.shape[0]), *x.shape),
+            dtype=x.dtype,
+            device=device,
+        )
+        for index, order in enumerate(orders):
+            n = int(order[0].item())
+            m = int(order[1].item())
+            absolute_m = abs(m)
+            radial = torch.zeros_like(rho)
+            for k in range((n - absolute_m) // 2 + 1):
+                numerator = (-1) ** k * math.factorial(n - k)
+                denominator = (
+                    math.factorial(k)
+                    * math.factorial((n + absolute_m) // 2 - k)
+                    * math.factorial((n - absolute_m) // 2 - k)
+                )
+                radial = radial + (numerator / denominator) * rho.pow(n - 2 * k)
+            angular = torch.cos(float(m) * phi) if m >= 0 else torch.sin(float(-m) * phi)
+            allzernikes[index] = radial * angular
         return allzernikes
 
     def prechirpz(self, xsize, qsize, n, m):
@@ -361,6 +350,7 @@ def _render_vector_psf_chunk(
     coeffs_rad: torch.Tensor,
     z_m: torch.Tensor,
     orient_vecs: torch.Tensor | None,
+    pupil_carrier_complex: torch.Tensor | None,
 ) -> torch.Tensor:
     psf = ctx.psf
     device = ctx.device
@@ -382,6 +372,8 @@ def _render_vector_psf_chunk(
         * torch.sum(coeffs_nm[:, :, None, None] * psf.allzernikes[None], dim=1)
         / psf.wavelength
     )
+    if pupil_carrier_complex is not None:
+        zernike_phase = zernike_phase * pupil_carrier_complex[None]
     pupilmatrix = (
         zernike_phase[None, None] * psf.polarizationvector[:, :, None] * psf.amplitude[None, None, None]
     )
@@ -426,6 +418,7 @@ def render_vector_psf_bank(
     z_m: np.ndarray | torch.Tensor,
     *,
     orient_vecs: np.ndarray | torch.Tensor | None = None,
+    pupil_carrier_complex: np.ndarray | torch.Tensor | None = None,
     out_size: int | None = None,
     batch_size: int | None = None,
     blur_sigma_px: float = 0.0,
@@ -443,6 +436,21 @@ def render_vector_psf_bank(
     if coeffs_t.shape[0] != z_m_t.shape[0]:
         raise ValueError("coeffs_rad and z_m must have the same leading dimension.")
 
+    fixed_lut = os.environ.get("NEPTUNE_FIXED_PSF_LUT")
+    if fixed_lut:
+        payload = np.load(fixed_lut, allow_pickle=False)
+        lut = torch.as_tensor(payload["psf_unit_flux"], device=device, dtype=torch.float32)
+        z_lut = torch.as_tensor(payload["z_nm"], device=device, dtype=torch.float32) * 1e-9
+        zq = z_m_t.reshape(-1).clamp(float(z_lut[0]), float(z_lut[-1]))
+        hi = torch.searchsorted(z_lut, zq).clamp(1, len(z_lut) - 1)
+        lo = hi - 1
+        w = ((zq - z_lut[lo]) / (z_lut[hi] - z_lut[lo]).clamp_min(1e-20)).reshape(-1, 1, 1)
+        psf_bank = lut[lo] * (1.0 - w) + lut[hi] * w
+        if out_size is not None and psf_bank.shape[-1] != int(out_size):
+            psf_bank = _center_crop_or_pad_torch(psf_bank, int(out_size))
+        psf_bank = psf_bank / psf_bank.sum(dim=(-2, -1), keepdim=True).clamp_min(1e-12)
+        return psf_bank if return_torch else psf_bank.detach().cpu().numpy()
+
     orient_t = None
     if orient_vecs is not None:
         orient_t = torch.as_tensor(orient_vecs, device=device, dtype=torch.float32)
@@ -450,6 +458,15 @@ def render_vector_psf_bank(
             raise ValueError("orient_vecs must have shape (N, 3).")
         if orient_t.shape[0] != coeffs_t.shape[0]:
             raise ValueError("orient_vecs length must match coeffs_rad.")
+
+    carrier_t = None
+    if pupil_carrier_complex is not None:
+        carrier_t = torch.as_tensor(pupil_carrier_complex, device=device)
+        if carrier_t.ndim != 2 or carrier_t.shape != ctx.psf.amplitude.shape:
+            raise ValueError("pupil_carrier_complex must match the sampled pupil shape.")
+        complex_dtype = torch.complex64 if coeffs_t.dtype == torch.float32 else torch.complex128
+        carrier_t = carrier_t.to(dtype=complex_dtype)
+        carrier_t = carrier_t / carrier_t.abs().clamp_min(torch.finfo(coeffs_t.dtype).eps)
 
     n_emitters = int(coeffs_t.shape[0])
     size_out = int(out_size) if out_size is not None else int(ctx.psf.psf_size)
@@ -462,7 +479,7 @@ def render_vector_psf_bank(
         coeffs_chunk = coeffs_t[start:end]
         z_chunk = z_m_t[start:end]
         orient_chunk = orient_t[start:end] if orient_t is not None else None
-        intensity = _render_vector_psf_chunk(ctx, coeffs_chunk, z_chunk, orient_chunk)
+        intensity = _render_vector_psf_chunk(ctx, coeffs_chunk, z_chunk, orient_chunk, carrier_t)
         if intensity.shape[-1] != size_out or intensity.shape[-2] != size_out:
             intensity = _center_crop_or_pad_torch(intensity, size_out)
         if blur_sigma_px > 0:

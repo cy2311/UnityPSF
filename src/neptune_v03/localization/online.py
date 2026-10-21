@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, replace
 import math
 import os
@@ -179,9 +180,16 @@ def _renderer_cache_key(
 ) -> tuple[object, ...]:
     maps = config.coeff_maps_nm
     maps_key = None if maps is None else (int(maps.data_ptr()), tuple(int(v) for v in maps.shape), str(maps.dtype))
+    carrier = config.pupil_carrier_complex
+    carrier_key = (
+        None
+        if carrier is None
+        else (int(carrier.data_ptr()), tuple(int(v) for v in carrier.shape), str(carrier.dtype))
+    )
     return (
         None if physical_model_version is None else int(physical_model_version),
         maps_key,
+        carrier_key,
         tuple((int(n), int(m)) for n, m in config.coeff_mode_order),
         float(config.na),
         float(config.wavelength_nm),
@@ -645,6 +653,11 @@ class OnlineBatchProviderConfig:
     pixel_size_nm_y: float = 98.83
     wavelength_nm: float = 660.0
     na: float = 1.4
+    refmed: float = 1.518
+    refcov: float = 1.518
+    refimm: float = 1.518
+    objstage0: float = 0.0
+    otf_rescale_xy: tuple[float, float] = (0.0, 0.0)
     npupil: int = 128
     vector_psf_size: int = 51
     vector_batch_size: int = 96
@@ -668,6 +681,7 @@ class OnlineBatchProviderConfig:
     domain_count: int = 2
     domain_balance_mode: str = "fixed"
     dual_domain_coeff_maps: tuple[Mapping[str, str], ...] = ()
+    pupil_carrier_complex: torch.Tensor | None = None
     batch_strategy: str = "triplet"
     sequence_window_chunks: int = 1
     sequence_count: int = 64
@@ -688,6 +702,24 @@ class OnlineBatchProviderConfig:
     lut_storage_dtype: str = "fp32"
     field_origin_sampling_mode: str = "grid"
     field_origin_stride_px: int = 40
+    input_signal_gain: float = 1.0
+    input_signal_anchor_adu: float | None = None
+
+
+def apply_anchored_input_gain(
+    input_adu: torch.Tensor,
+    *,
+    signal_gain: float,
+    signal_anchor_adu: float | None,
+) -> torch.Tensor:
+    """Compress ADU deviations around the shared train/inference background anchor."""
+    gain = float(signal_gain)
+    if gain == 1.0:
+        return input_adu
+    if signal_anchor_adu is None:
+        raise ValueError("input_signal_anchor_adu is required when input_signal_gain differs from 1.0")
+    anchor = float(signal_anchor_adu)
+    return anchor + (input_adu - anchor) * gain
 
 
 def _env_flag(name: str, *, default: bool) -> bool:
@@ -739,6 +771,8 @@ def _resolve_field_origin_sampling_mode(config: OnlineBatchProviderConfig) -> st
     aliases = {
         "fixed_grid": "grid",
         "cached_grid": "grid",
+        "center_grid": "cell_center_grid",
+        "centered_grid": "cell_center_grid",
         "random_step": "per_step_random",
         "step_random": "per_step_random",
         "sliding": "sliding_window",
@@ -746,8 +780,11 @@ def _resolve_field_origin_sampling_mode(config: OnlineBatchProviderConfig) -> st
         "fd-deeploc": "sliding_window",
     }
     mode = aliases.get(raw, raw)
-    if mode not in {"grid", "per_step_random", "sliding_window"}:
-        raise ValueError("field_origin_sampling_mode must be 'grid', 'per_step_random', or 'sliding_window'")
+    if mode not in {"grid", "cell_center_grid", "per_step_random", "sliding_window"}:
+        raise ValueError(
+            "field_origin_sampling_mode must be 'grid', 'cell_center_grid', "
+            "'per_step_random', or 'sliding_window'"
+        )
     return mode
 
 
@@ -761,6 +798,9 @@ def _validate_online_lut_modes(config: OnlineBatchProviderConfig) -> None:
 
 
 def build_online_batch_provider(config: OnlineBatchProviderConfig, *, condition_store: ConditioningProviderStore | None = None):
+    backend = str(config.simulation_backend).strip().lower()
+    if backend not in {"native", "lut", "cuda_gemm"}:
+        raise ValueError("simulation_backend must be 'native', 'lut', or 'cuda_gemm'")
     _validate_online_lut_modes(config)
     if config.dual_domain_coeff_maps and int(config.domain_count) != len(config.dual_domain_coeff_maps):
         raise ValueError("domain_count must match dual_domain_coeff_maps length")
@@ -792,6 +832,10 @@ def build_online_batch_provider(config: OnlineBatchProviderConfig, *, condition_
     else:
         lifecycle.activate(version=None, condition_providers=condition_providers or default_condition_providers)
 
+    async_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="window-producer")
+    async_futures: dict[int, Future[_CachedWindowEpochBatches]] = {}
+    async_state_key: tuple[int | None, int] | None = None
+
     def condition_state() -> tuple[int | None, tuple[tuple[str | None, FullResZernikeConditioning], ...], int]:
         condition_store_version = None
         active_condition_providers = condition_providers
@@ -803,15 +847,23 @@ def build_online_batch_provider(config: OnlineBatchProviderConfig, *, condition_
         return condition_store_version, active_condition_providers, lifecycle.cache_generation
 
     def provider(epoch: int) -> list[TrainingBatch]:
+        nonlocal async_state_key
         if int(config.steps_per_epoch) <= 0:
             raise ValueError("steps_per_epoch must be positive")
         condition_store_version, active_condition_providers, cache_generation = condition_state()
 
         if str(config.batch_strategy) == "cached_window":
-            return _TrainingBatchSequence(
-                _build_cached_window_epoch_batches(
+            state_key = (condition_store_version, int(cache_generation))
+            if async_state_key != state_key:
+                for future in async_futures.values():
+                    future.cancel()
+                async_futures.clear()
+                async_state_key = state_key
+
+            def make_epoch(epoch_value: int) -> _CachedWindowEpochBatches:
+                return _build_cached_window_epoch_batches(
                     config,
-                    epoch=int(epoch),
+                    epoch=int(epoch_value),
                     condition_providers=active_condition_providers,
                     condition_store_version=condition_store_version,
                     cache_generation=cache_generation,
@@ -819,8 +871,18 @@ def build_online_batch_provider(config: OnlineBatchProviderConfig, *, condition_
                     renderer_cache=renderer_cache,
                     lut_patch_bank_cache=lut_patch_bank_cache,
                     lut_lifecycle=lifecycle,
-                )
-            )
+                ).materialize()
+
+            epoch_i = int(epoch)
+            future = async_futures.get(epoch_i)
+            if future is None:
+                future = async_executor.submit(make_epoch, epoch_i)
+                async_futures[epoch_i] = future
+            epoch_batches = future.result()
+            next_epoch = epoch_i + 1
+            if next_epoch not in async_futures:
+                async_futures[next_epoch] = async_executor.submit(make_epoch, next_epoch)
+            return _TrainingBatchSequence(epoch_batches)
 
         batches: list[TrainingBatch] = []
         base_seed = int(config.seed) + int(epoch)
@@ -973,8 +1035,6 @@ class _PhysicalVersionedLUTLifecycle:
                 full_h, full_w = condition_provider.image_shape_hw
                 roi_w = min(int(self.config.width), int(full_w))
                 roi_h = min(int(self.config.height), int(full_h))
-                max_x0 = max(0, int(full_w) - roi_w)
-                max_y0 = max(0, int(full_h) - roi_h)
                 if _resolve_field_origin_sampling_mode(self.config) == "sliding_window":
                     origin_iter = build_sliding_window_origin_bank(
                         field_width_px=int(full_w),
@@ -990,10 +1050,23 @@ class _PhysicalVersionedLUTLifecycle:
                         grid_y = max(1, int(grid[1] if len(grid) > 1 else grid[0]))
                     else:
                         grid_x = grid_y = max(1, int(grid))
+                    centered = _resolve_field_origin_sampling_mode(self.config) == "cell_center_grid"
                     origin_iter = tuple(
                         (
-                            int(0 if grid_x <= 1 else round(float(col) * float(max_x0) / float(grid_x - 1))),
-                            int(0 if grid_y <= 1 else round(float(row) * float(max_y0) / float(grid_y - 1))),
+                            _grid_axis_origin(
+                                cell_index=col,
+                                grid_size=grid_x,
+                                full_size=int(full_w),
+                                roi_size=roi_w,
+                                centered=centered,
+                            ),
+                            _grid_axis_origin(
+                                cell_index=row,
+                                grid_size=grid_y,
+                                full_size=int(full_h),
+                                roi_size=roi_h,
+                                centered=centered,
+                            ),
                         )
                         for row in range(grid_y)
                         for col in range(grid_x)
@@ -1064,7 +1137,7 @@ def _build_native_online_batch(
         frames_per_sample=int(config.channels),
         condition_provider=condition_provider,
     )
-    if str(config.simulation_backend).strip().lower() == "lut":
+    if str(config.simulation_backend).strip().lower() in {"lut", "cuda_gemm"}:
         loc_batch = _build_lut_like_sequence_batch(
             config,
             sim_config,
@@ -1091,6 +1164,8 @@ def _build_native_online_batch(
             "sequence_window_chunks": int(config.sequence_window_chunks),
             **({} if condition_store_version is None else {"physical_model_version": int(condition_store_version)}),
             "lut_cache_generation": int(cache_generation),
+            "simulation_backend": str(config.simulation_backend).strip().lower(),
+            "simulation_backend_effective": "cuda_extension_per_emitter_psf_torch_frame_reduction" if str(config.simulation_backend).strip().lower() == "cuda_gemm" else str(config.simulation_backend).strip().lower(),
         }
     )
     target_order = loc_batch.metadata.get("pxyz_target_order")
@@ -1172,18 +1247,24 @@ def _attach_film_conditioning(
 
 
 class _TrainingBatchSequence:
-    def __init__(self, loc_batches) -> None:
+    def __init__(self, loc_batches, *, transform: Callable[[LocalizationTrainBatch], LocalizationTrainBatch] | None = None) -> None:
         self._loc_batches = loc_batches
+        self._transform = transform
 
     def __len__(self) -> int:
         return len(self._loc_batches)
 
     def __iter__(self):
         for loc_batch in self._loc_batches:
+            if self._transform is not None:
+                loc_batch = self._transform(loc_batch)
             yield to_training_batch(loc_batch)
 
     def __getitem__(self, index: int) -> TrainingBatch:
-        return to_training_batch(self._loc_batches[int(index)])
+        loc_batch = self._loc_batches[int(index)]
+        if self._transform is not None:
+            loc_batch = self._transform(loc_batch)
+        return to_training_batch(loc_batch)
 
 
 class _CachedWindowEpochBatches:
@@ -1250,6 +1331,16 @@ class _CachedWindowEpochBatches:
     def __iter__(self):
         for batch_idx in range(len(self)):
             yield self[batch_idx]
+
+    def materialize(self) -> "_CachedWindowEpochBatches":
+        """Build every sequence before training starts consuming this epoch."""
+        # The epoch pool is CPU backed. Keep all sequences addressable so the
+        # iterator never has to regenerate an evicted sequence mid-epoch.
+        self.max_cached_sequences = 0
+        for sequence_idx in range(self.sequence_count):
+            payload = self._sequence(sequence_idx)
+            _offload_cached_sequence_payload(payload)
+        return self
 
     def __getitem__(self, batch_idx: int) -> LocalizationTrainBatch:
         self._refresh_condition_state()
@@ -1379,27 +1470,17 @@ class _CachedWindowEpochBatches:
             frames_per_sample=1,
             condition_provider=condition_provider,
         )
-        if str(config.simulation_backend).strip().lower() == "lut":
-            sequence = _simulate_lut_like_sequence(
-                config,
-                sim_config,
-                frame_count=self.frames_per_sequence,
-                physical_model_version=self.condition_store_version,
-                cache_generation=self.cache_generation,
-                renderer_cache=self.renderer_cache,
-                lut_patch_bank_cache=self.lut_patch_bank_cache,
-            )
-        else:
-            sequence = _simulate_native_sequence(
-                config,
-                sim_config,
-                epoch=self.epoch,
-                sequence_idx=sequence_idx,
-                frame_count=self.frames_per_sequence,
-                physical_model_version=self.condition_store_version,
-                cache_generation=self.cache_generation,
-                renderer_cache=self.renderer_cache,
-            )
+        sequence = _simulate_cached_window_sequence(
+            config,
+            sim_config,
+            epoch=self.epoch,
+            sequence_idx=sequence_idx,
+            frame_count=self.frames_per_sequence,
+            physical_model_version=self.condition_store_version,
+            cache_generation=self.cache_generation,
+            renderer_cache=self.renderer_cache,
+            lut_patch_bank_cache=self.lut_patch_bank_cache,
+        )
         payload = {
             **sequence,
             "sequence_idx": sequence_idx,
@@ -1456,6 +1537,24 @@ def _resolve_cached_window_order(config: OnlineBatchProviderConfig) -> str:
     if raw in {"shuffle", "sequence_block"}:
         return raw
     raise ValueError("cached_window_order must be 'auto', 'shuffle', or 'sequence_block'")
+
+
+def _offload_cached_sequence_payload(payload: dict[str, object]) -> None:
+    """Move materialized sequence tensors to CPU staging storage."""
+    for key, value in tuple(payload.items()):
+        payload[key] = _offload_cached_sequence_value(value)
+
+
+def _offload_cached_sequence_value(value: object) -> object:
+    if isinstance(value, torch.Tensor):
+        return value.detach().to(device="cpu")
+    if isinstance(value, dict):
+        return {key: _offload_cached_sequence_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(_offload_cached_sequence_value(item) for item in value)
+    if isinstance(value, list):
+        return [_offload_cached_sequence_value(item) for item in value]
+    return value
 
 
 def _resolve_cached_window_max_cached_sequences(config: OnlineBatchProviderConfig) -> int:
@@ -1573,6 +1672,41 @@ def _precompute_cached_sequence_payload(
                 feature_dim=_condition_feature_dim(config),
             ).contiguous()
             payload["precomputed_condition_source"] = str(condition_source)
+
+
+def _simulate_cached_window_sequence(
+    config: OnlineBatchProviderConfig,
+    sim_config: LocalizationSimulatorConfig,
+    *,
+    epoch: int,
+    sequence_idx: int,
+    frame_count: int,
+    physical_model_version: int | None = None,
+    cache_generation: int = 0,
+    renderer_cache: _VectorRendererCache | None = None,
+    lut_patch_bank_cache: _LUTPatchBankCache | None = None,
+) -> dict[str, object]:
+    backend = str(config.simulation_backend).strip().lower()
+    if backend in {"lut", "cuda_gemm"}:
+        return _simulate_lut_like_sequence(
+            config,
+            sim_config,
+            frame_count=int(frame_count),
+            physical_model_version=physical_model_version,
+            cache_generation=cache_generation,
+            renderer_cache=renderer_cache,
+            lut_patch_bank_cache=lut_patch_bank_cache,
+        )
+    return _simulate_native_sequence(
+        config,
+        sim_config,
+        epoch=epoch,
+        sequence_idx=sequence_idx,
+        frame_count=int(frame_count),
+        physical_model_version=physical_model_version,
+        cache_generation=cache_generation,
+        renderer_cache=renderer_cache,
+    )
 
 
 def _simulate_native_sequence(
@@ -1695,6 +1829,11 @@ def _simulate_native_sequence_batched(
         )
         render_frames_calls = 1
 
+    input_domain = "photons"
+    if str(config.simulation_backend).strip().lower() == "cuda_gemm":
+        frames = _apply_cuda_gemm_camera_readout(config, frames, seed=int(sim_config.seed))
+        input_domain = "raw_adu_anchored_gain" if float(config.input_signal_gain) != 1.0 else "raw_adu"
+
     bkg_tar = background.view(frame_count, 1, 1).expand(frame_count, height, width).clone() / max(float(config.background_scale), 1e-12)
     batch = LocalizationTrainBatch(
         model_input=frames[:, None].to(dtype=torch.float32).contiguous(),
@@ -1709,6 +1848,7 @@ def _simulate_native_sequence_batched(
             "psf_type": str(sim_config.psf_type).lower(),
             "emitter_counts": [int(v) for v in counts.tolist()],
             "render_frames_calls": render_frames_calls,
+            "input_domain": input_domain,
         },
     )
     if str(config.simulation_output_device).strip().lower() == "cpu":
@@ -1723,6 +1863,39 @@ def _simulate_native_sequence_batched(
     if str(config.simulation_output_device).strip().lower() == "renderer":
         return batch
     raise ValueError("simulation_output_device must be 'cpu' or 'renderer'")
+
+
+def _apply_cuda_gemm_camera_readout(
+    config: OnlineBatchProviderConfig,
+    frames: torch.Tensor,
+    *,
+    seed: int,
+) -> torch.Tensor:
+    expected_electrons = (
+        frames * float(config.camera_qe) + float(config.camera_spurious_charge)
+    ).clamp_min(0.0)
+    generator = torch.Generator(device=frames.device).manual_seed(int(seed))
+    raw_adu = torch.poisson(expected_electrons, generator=generator)
+    raw_adu = raw_adu / max(float(config.camera_e_per_adu), 1e-12) + float(config.camera_baseline)
+    return apply_anchored_input_gain(
+        raw_adu,
+        signal_gain=float(config.input_signal_gain),
+        signal_anchor_adu=config.input_signal_anchor_adu,
+    )
+
+
+def _apply_lut_camera_readout(
+    config: OnlineBatchProviderConfig,
+    frames: torch.Tensor,
+) -> torch.Tensor:
+    raw_adu = torch.poisson(
+        frames * float(config.camera_qe) + float(config.camera_spurious_charge)
+    ) / max(float(config.camera_e_per_adu), 1e-12) + float(config.camera_baseline)
+    return apply_anchored_input_gain(
+        raw_adu,
+        signal_gain=float(config.input_signal_gain),
+        signal_anchor_adu=config.input_signal_anchor_adu,
+    )
 
 
 def _simulate_lut_like_sequence(
@@ -1751,10 +1924,16 @@ def _simulate_lut_like_sequence(
     cache_misses_after = 0 if renderer_cache is None else int(renderer_cache.misses)
     bank_hits_after = 0 if lut_patch_bank_cache is None else int(lut_patch_bank_cache.hits)
     bank_misses_after = 0 if lut_patch_bank_cache is None else int(lut_patch_bank_cache.misses)
-    with time_block("poisson_camera_noise"):
-        raw_adu = torch.poisson(
-            frame_photons * float(config.camera_qe) + float(config.camera_spurious_charge)
-        ) / max(float(config.camera_e_per_adu), 1e-12) + float(config.camera_baseline)
+    backend = str(config.simulation_backend).strip().lower()
+    if backend == "cuda_gemm":
+        raw_adu = _apply_cuda_gemm_camera_readout(config, frame_photons, seed=int(sim_config.seed))
+    else:
+        raw_adu = _apply_lut_camera_readout(config, frame_photons)
+    backend_effective = (
+        "cuda_extension_per_emitter_psf_torch_frame_reduction"
+        if backend == "cuda_gemm"
+        else "lut_global_field" if _resolve_lut_field_mode(config) == "global_field" else "lut_patch_bank"
+    )
     return {
         "frames": raw_adu.to(dtype=torch.float32),
         "pxyz": pxyz_by_frame,
@@ -1762,13 +1941,15 @@ def _simulate_lut_like_sequence(
         "bkg": bkg_by_frame / max(float(config.background_scale), 1e-12),
         "counts": [int(item) for item in counts],
         "metadata": {
-            "simulation_backend": "lut",
-            "simulation_backend_effective": "lut_global_field" if _resolve_lut_field_mode(config) == "global_field" else "lut_patch_bank",
-            "lut_field_mode": _resolve_lut_field_mode(config),
-            "lut_storage_dtype": _resolve_lut_storage_dtype(config),
-            "lut_shift_backend": _resolve_lut_subpixel_shift_backend(),
-            "projection_backend": _resolve_projection_backend(),
-            "input_domain": "raw_adu",
+            "simulation_backend": backend,
+            "simulation_backend_effective": backend_effective,
+            **({} if backend == "cuda_gemm" else {
+                "lut_field_mode": _resolve_lut_field_mode(config),
+                "lut_storage_dtype": _resolve_lut_storage_dtype(config),
+                "lut_shift_backend": _resolve_lut_subpixel_shift_backend(),
+                "projection_backend": _resolve_projection_backend(),
+            }),
+            "input_domain": "raw_adu_anchored_gain" if float(config.input_signal_gain) != 1.0 else "raw_adu",
             "frame_emitter_policy": "center_frame_only",
             "background_scale": float(config.background_scale),
             "psf_type": str(config.psf_type).lower(),
@@ -1776,18 +1957,20 @@ def _simulate_lut_like_sequence(
             "renderer_cache_misses": cache_misses_after - cache_misses_before,
             "lut_patch_bank_hits": bank_hits_after - bank_hits_before,
             "lut_patch_bank_misses": bank_misses_after - bank_misses_before,
-            "lut_patch_count": _lut_patch_count(
-                config,
-                sim_config,
-                lut_patch_bank_cache,
-                physical_model_version=physical_model_version,
-            ),
+            **({} if backend == "cuda_gemm" else {
+                "lut_patch_count": _lut_patch_count(
+                    config,
+                    sim_config,
+                    lut_patch_bank_cache,
+                    physical_model_version=physical_model_version,
+                ),
+            }),
             **({} if physical_model_version is None else {"physical_model_version": int(physical_model_version)}),
             **({} if physical_model_version is None else {"lut_patch_bank_version": int(physical_model_version)}),
             "lut_cache_generation": int(cache_generation),
             "render_many_calls": 0,
         },
-        "sequence_source": "native_lut_like_cached_window_sequence_frames",
+        "sequence_source": "shared_lut_sampling_cached_window_sequence_frames",
     }
 
 
@@ -2167,6 +2350,11 @@ def _simulator_config(
         pixel_size_nm_y=float(config.pixel_size_nm_y),
         wavelength_nm=float(config.wavelength_nm),
         na=float(config.na),
+        refmed=float(config.refmed),
+        refcov=float(config.refcov),
+        refimm=float(config.refimm),
+        objstage0=float(config.objstage0),
+        otf_rescale_xy=tuple(float(value) for value in config.otf_rescale_xy),
         npupil=int(config.npupil),
         vector_psf_size=int(config.vector_psf_size),
         vector_batch_size=int(config.vector_batch_size),
@@ -2183,7 +2371,9 @@ def _simulator_config(
         field_origin_xy=field_origin,
         coeff_maps_nm=condition_provider.full_maps_nm if str(config.psf_type).lower() == "vector" else None,
         coeff_mode_order=tuple(condition_provider.mode_order) if str(config.psf_type).lower() == "vector" else (),
+        pupil_carrier_complex=config.pupil_carrier_complex if str(config.psf_type).lower() == "vector" else None,
         output_device=str(config.simulation_output_device),
+        simulation_backend=str(config.simulation_backend),
     )
 
 
@@ -2266,9 +2456,16 @@ def _build_lut_like_sequence_batch(
         renderer_cache=renderer_cache,
         lut_patch_bank_cache=lut_patch_bank_cache,
     )
-    raw_adu = torch.poisson(
-        frame_photons * float(config.camera_qe) + float(config.camera_spurious_charge)
-    ) / max(float(config.camera_e_per_adu), 1e-12) + float(config.camera_baseline)
+    backend = str(config.simulation_backend).strip().lower()
+    if backend == "cuda_gemm":
+        raw_adu = _apply_cuda_gemm_camera_readout(config, frame_photons, seed=int(sim_config.seed))
+    else:
+        raw_adu = _apply_lut_camera_readout(config, frame_photons)
+    backend_effective = (
+        "cuda_extension_per_emitter_psf_torch_frame_reduction"
+        if backend == "cuda_gemm"
+        else "lut_global_field" if _resolve_lut_field_mode(config) == "global_field" else "lut_patch_bank"
+    )
     frames = []
     detect = []
     bkg = []
@@ -2297,12 +2494,14 @@ def _build_lut_like_sequence_batch(
             "step": int(step),
             "seed": int(config.seed),
             "source": "native_online",
-            "sequence_source": "native_lut_like_sequence_frames",
-            "simulation_backend": "lut",
-            "simulation_backend_effective": "lut_patch_bank",
-            "lut_shift_backend": _resolve_lut_subpixel_shift_backend(),
-            "projection_backend": _resolve_projection_backend(),
-            "input_domain": "raw_adu",
+            "sequence_source": "shared_lut_sampling_sequence_frames",
+            "simulation_backend": backend,
+            "simulation_backend_effective": backend_effective,
+            **({} if backend == "cuda_gemm" else {
+                "lut_shift_backend": _resolve_lut_subpixel_shift_backend(),
+                "projection_backend": _resolve_projection_backend(),
+            }),
+            "input_domain": "raw_adu_anchored_gain" if float(config.input_signal_gain) != 1.0 else "raw_adu",
             "frame_emitter_policy": "center_frame_only",
             "frames_per_sample": window_size,
             "sequence_simulated_frames": sequence_frames,
@@ -2330,6 +2529,112 @@ def _simulate_lut_like_sequence_frames(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, list[int]]:
     height = int(config.height)
     width = int(config.width)
+    if str(config.psf_type).strip().lower() != "vector":
+        raise ValueError("shared cached-window simulation requires psf_type='vector'")
+    if renderer_cache is None:
+        renderer_cache = _VectorRendererCache()
+    if lut_patch_bank_cache is None:
+        lut_patch_bank_cache = _LUTPatchBankCache(renderer_cache)
+    events = _sample_lut_sequence_events(config, sim_config, frame_count=int(frame_count))
+    backend = str(config.simulation_backend).strip().lower()
+    lut_bank = None
+    vector_renderer = None
+    if backend == "lut":
+        with time_block("lut_sequence_get_bank"):
+            lut_bank = lut_patch_bank_cache.get(
+                config,
+                sim_config,
+                physical_model_version=physical_model_version,
+            )
+        render_device = lut_bank.patches.device
+    elif backend == "cuda_gemm":
+        vector_renderer = renderer_cache.get(sim_config, physical_model_version=physical_model_version)
+        render_device = vector_renderer.device
+    else:
+        raise ValueError(f"shared temporal sampler does not support backend={backend!r}")
+    with time_block("lut_sequence_frame_background_init"):
+        frames = (
+            events["background"][:, None, None].to(device=render_device)
+            .expand(int(frame_count), height, width)
+            .clone()
+        )
+    counts = list(events["counts"])
+    pxyz = events["pxyz"].to(device=render_device)
+    mask = events["mask"].to(device=render_device)
+    if events["emitter_indices"].numel() > 0:
+        frame_indices = events["frame_indices"].to(device=render_device)
+        emitter_indices = events["emitter_indices"].numpy()
+        overlaps = events["overlaps"].numpy()
+        xs = torch.as_tensor(events["xy"][emitter_indices, 0], dtype=torch.float32, device=render_device)
+        ys = torch.as_tensor(events["xy"][emitter_indices, 1], dtype=torch.float32, device=render_device)
+        z_t = torch.as_tensor(events["z"][emitter_indices], dtype=torch.float32, device=render_device)
+        photons_t = torch.as_tensor(
+            events["photons"][emitter_indices] * overlaps,
+            dtype=torch.float32,
+            device=render_device,
+        )
+        if backend == "lut":
+            patches = _lookup_lut_patches(
+                lut_bank,
+                xs=xs,
+                ys=ys,
+                z_um=z_t,
+                photons=photons_t,
+                field_origin_xy=tuple(int(v) for v in sim_config.field_origin_xy),
+            )
+            patches = _apply_lut_subpixel_shift(
+                patches,
+                xs=xs,
+                ys=ys,
+                subpixel_bins=lut_bank.subpixel_bins,
+                chunk_size=int(config.vector_batch_size),
+            )
+            frames += _project_patches_to_frames(
+                patches,
+                frame_count=int(frame_count),
+                height=height,
+                width=width,
+                frame_indices=frame_indices,
+                center_x=torch.floor(xs).to(dtype=torch.long),
+                center_y=torch.floor(ys).to(dtype=torch.long),
+            )
+        else:
+            frames += vector_renderer.render_frames(
+                frame_count=int(frame_count),
+                height=height,
+                width=width,
+                frame_indices=frame_indices,
+                xs=xs,
+                ys=ys,
+                z_um=z_t,
+                photons=photons_t,
+                field_origin_xy=tuple(int(v) for v in sim_config.field_origin_xy),
+            )
+    with time_block("lut_sequence_bkg_target_init"):
+        bkg = (
+            events["background"][:, None, None].to(device=render_device)
+            .expand(int(frame_count), height, width)
+            .clone()
+        )
+    with time_block("lut_sequence_output_device_transfer"):
+        if str(config.simulation_output_device).strip().lower() == "cpu":
+            frames = frames.cpu()
+            pxyz = pxyz.cpu()
+            mask = mask.cpu()
+            bkg = bkg.cpu()
+        elif str(config.simulation_output_device).strip().lower() != "renderer":
+            raise ValueError("simulation_output_device must be 'cpu' or 'renderer'")
+    return frames, pxyz, mask, bkg, counts
+
+
+def _sample_lut_sequence_events(
+    config: OnlineBatchProviderConfig,
+    sim_config: LocalizationSimulatorConfig,
+    *,
+    frame_count: int,
+) -> dict[str, object]:
+    height = int(config.height)
+    width = int(config.width)
     with time_block("lut_sequence_sample_emitters"):
         rng = np.random.default_rng(int(sim_config.seed))
         target_active = _target_active_emitters(config)
@@ -2344,112 +2649,45 @@ def _simulate_lut_like_sequence_frames(
         t0 = rng.uniform(-0.5 * float(config.warmup_frames), float(frame_count) + 0.5 * float(config.warmup_frames), size=pool)
         t1 = t0 + rng.exponential(max(float(config.lifetime_avg), 1e-6), size=pool)
         bg_values = _sample_lut_background(config, rng=rng, count=int(frame_count))
-    if str(config.psf_type).strip().lower() != "vector":
-        raise ValueError("online LUT simulation requires psf_type='vector'")
-    if renderer_cache is None:
-        renderer_cache = _VectorRendererCache()
-    if lut_patch_bank_cache is None:
-        lut_patch_bank_cache = _LUTPatchBankCache(renderer_cache)
-    with time_block("lut_sequence_get_bank"):
-        lut_bank = lut_patch_bank_cache.get(
-            config,
-            sim_config,
-            physical_model_version=physical_model_version,
-        )
-    render_device = lut_bank.patches.device
-    with time_block("lut_sequence_frame_background_init"):
-        frames = (
-            torch.as_tensor(bg_values[:, None, None], dtype=torch.float32, device=render_device)
-            .expand(int(frame_count), height, width)
-            .clone()
-        )
-    with time_block("lut_sequence_events_by_frame"):
-        events_by_frame: list[list[tuple[int, float]]] = [[] for _ in range(int(frame_count))]
-        for frame_idx in range(int(frame_count)):
-            overlap = np.minimum(t1, float(frame_idx + 1)) - np.maximum(t0, float(frame_idx))
-            active = np.nonzero(overlap > 0)[0]
-            for emitter_idx in active:
-                events_by_frame[frame_idx].append((int(emitter_idx), float(overlap[emitter_idx])))
+    events_by_frame: list[list[tuple[int, float]]] = [[] for _ in range(int(frame_count))]
+    for frame_idx in range(int(frame_count)):
+        overlap = np.minimum(t1, float(frame_idx + 1)) - np.maximum(t0, float(frame_idx))
+        active = np.nonzero(overlap > 0)[0]
+        events_by_frame[frame_idx] = [(int(emitter_idx), float(overlap[emitter_idx])) for emitter_idx in active]
 
-    with time_block("lut_sequence_target_alloc"):
-        max_count = max(1, max(len(items) for items in events_by_frame))
-        pxyz = torch.zeros((int(frame_count), max_count, 4), dtype=torch.float32, device=render_device)
-        mask = torch.zeros((int(frame_count), max_count), dtype=torch.bool, device=render_device)
-    counts: list[int] = []
+    counts = [len(items) for items in events_by_frame]
+    max_count = max(1, max(counts))
+    pxyz = torch.zeros((int(frame_count), max_count, 4), dtype=torch.float32)
+    mask = torch.zeros((int(frame_count), max_count), dtype=torch.bool)
     flat_frame_indices: list[int] = []
     flat_emitter_indices: list[int] = []
     flat_overlaps: list[float] = []
-    with time_block("lut_sequence_flat_event_arrays"):
-        for frame_idx, items in enumerate(events_by_frame):
-            counts.append(len(items))
-            if not items:
-                continue
-            flat_frame_indices.extend([int(frame_idx)] * len(items))
-            flat_emitter_indices.extend(int(item[0]) for item in items)
-            flat_overlaps.extend(float(item[1]) for item in items)
-    if flat_emitter_indices:
-        with time_block("lut_sequence_event_tensors_to_device"):
-            emitter_idx = np.asarray(flat_emitter_indices, dtype=np.int64)
-            overlaps = np.asarray(flat_overlaps, dtype=np.float32)
-            frame_indices = torch.as_tensor(flat_frame_indices, dtype=torch.long, device=render_device)
-            xs = torch.as_tensor(xy[emitter_idx, 0], dtype=torch.float32, device=render_device)
-            ys = torch.as_tensor(xy[emitter_idx, 1], dtype=torch.float32, device=render_device)
-            z_t = torch.as_tensor(z[emitter_idx], dtype=torch.float32, device=render_device)
-            photons_t = torch.as_tensor(photons[emitter_idx] * overlaps, dtype=torch.float32, device=render_device)
-        patches = _lookup_lut_patches(
-            lut_bank,
-            xs=xs,
-            ys=ys,
-            z_um=z_t,
-            photons=photons_t,
-            field_origin_xy=tuple(int(v) for v in sim_config.field_origin_xy),
-        )
-        patches = _apply_lut_subpixel_shift(
-            patches,
-            xs=xs,
-            ys=ys,
-            subpixel_bins=lut_bank.subpixel_bins,
-            chunk_size=int(config.vector_batch_size),
-        )
-        with time_block("lut_sequence_center_indices"):
-            center_x = torch.floor(xs).to(dtype=torch.long)
-            center_y = torch.floor(ys).to(dtype=torch.long)
-        frames += _project_patches_to_frames(
-            patches,
-            frame_count=int(frame_count),
-            height=height,
-            width=width,
-            frame_indices=frame_indices,
-            center_x=center_x,
-            center_y=center_y,
-        )
-        with time_block("lut_sequence_pxyz_mask_fill"):
-            cursor = 0
-            for frame_idx, count in enumerate(counts):
-                if count <= 0:
-                    continue
-                frame_slice = slice(cursor, cursor + int(count))
-                pxyz[frame_idx, :count, 0] = xs[frame_slice]
-                pxyz[frame_idx, :count, 1] = ys[frame_slice]
-                pxyz[frame_idx, :count, 2] = z_t[frame_slice]
-                pxyz[frame_idx, :count, 3] = photons_t[frame_slice]
-                mask[frame_idx, :count] = True
-                cursor += int(count)
-    with time_block("lut_sequence_bkg_target_init"):
-        bkg = (
-            torch.as_tensor(bg_values[:, None, None], dtype=torch.float32, device=render_device)
-            .expand(int(frame_count), height, width)
-            .clone()
-        )
-    with time_block("lut_sequence_output_device_transfer"):
-        if str(config.simulation_output_device).strip().lower() == "cpu":
-            frames = frames.cpu()
-            pxyz = pxyz.cpu()
-            mask = mask.cpu()
-            bkg = bkg.cpu()
-        elif str(config.simulation_output_device).strip().lower() != "renderer":
-            raise ValueError("simulation_output_device must be 'cpu' or 'renderer'")
-    return frames, pxyz, mask, bkg, counts
+    for frame_idx, items in enumerate(events_by_frame):
+        if not items:
+            continue
+        emitter_indices = np.asarray([item[0] for item in items], dtype=np.int64)
+        overlap_values = np.asarray([item[1] for item in items], dtype=np.float32)
+        count = len(items)
+        pxyz[frame_idx, :count, 0] = torch.from_numpy(xy[emitter_indices, 0])
+        pxyz[frame_idx, :count, 1] = torch.from_numpy(xy[emitter_indices, 1])
+        pxyz[frame_idx, :count, 2] = torch.from_numpy(z[emitter_indices])
+        pxyz[frame_idx, :count, 3] = torch.from_numpy(photons[emitter_indices] * overlap_values)
+        mask[frame_idx, :count] = True
+        flat_frame_indices.extend([int(frame_idx)] * count)
+        flat_emitter_indices.extend(emitter_indices.tolist())
+        flat_overlaps.extend(overlap_values.tolist())
+    return {
+        "background": torch.from_numpy(bg_values),
+        "counts": counts,
+        "emitter_indices": torch.as_tensor(flat_emitter_indices, dtype=torch.long),
+        "frame_indices": torch.as_tensor(flat_frame_indices, dtype=torch.long),
+        "mask": mask,
+        "overlaps": torch.as_tensor(flat_overlaps, dtype=torch.float32),
+        "photons": photons,
+        "pxyz": pxyz,
+        "xy": xy,
+        "z": z,
+    }
 
 
 def _target_active_emitters(config: OnlineBatchProviderConfig) -> float:
@@ -2525,8 +2763,6 @@ def _cached_sequence_condition_origin(
     full_h, full_w = condition_provider.image_shape_hw
     roi_w = min(int(config.width), int(full_w))
     roi_h = min(int(config.height), int(full_h))
-    max_x0 = max(0, int(full_w) - roi_w)
-    max_y0 = max(0, int(full_h) - roi_h)
     grid = config.nat_grid_size
     if isinstance(grid, tuple):
         grid_x = max(1, int(grid[0]))
@@ -2538,8 +2774,21 @@ def _cached_sequence_condition_origin(
     cell = int(cell) % cell_count
     col = cell % grid_x
     row = cell // grid_x
-    x0 = 0 if grid_x <= 1 else round(float(col) * float(max_x0) / float(grid_x - 1))
-    y0 = 0 if grid_y <= 1 else round(float(row) * float(max_y0) / float(grid_y - 1))
+    mode = _resolve_field_origin_sampling_mode(config)
+    x0 = _grid_axis_origin(
+        cell_index=col,
+        grid_size=grid_x,
+        full_size=int(full_w),
+        roi_size=roi_w,
+        centered=mode == "cell_center_grid",
+    )
+    y0 = _grid_axis_origin(
+        cell_index=row,
+        grid_size=grid_y,
+        full_size=int(full_h),
+        roi_size=roi_h,
+        centered=mode == "cell_center_grid",
+    )
     return int(x0), int(y0)
 
 
@@ -2649,6 +2898,23 @@ def _condition_roi_extent(axis_size: int, grid_size: int) -> int:
     return max(1, min(int(axis_size), int(axis_size) // max(1, int(grid_size))))
 
 
+def _grid_axis_origin(
+    *,
+    cell_index: int,
+    grid_size: int,
+    full_size: int,
+    roi_size: int,
+    centered: bool,
+) -> int:
+    max_origin = max(0, int(full_size) - int(roi_size))
+    if centered:
+        cell_center = (float(cell_index) + 0.5) * float(full_size) / float(grid_size)
+        return int(min(max_origin, max(0, round(cell_center - float(roi_size) / 2.0))))
+    if int(grid_size) <= 1:
+        return 0
+    return int(round(float(cell_index) * float(max_origin) / float(grid_size - 1)))
+
+
 def _condition_origin(
     config: OnlineBatchProviderConfig,
     *,
@@ -2666,10 +2932,21 @@ def _condition_origin(
     cell = (int(global_step) * int(config.batch_size) + int(sample_index)) % (grid_x * grid_y)
     col = cell % grid_x
     row = cell // grid_x
-    max_x0 = max(0, int(config.width) - int(roi_width))
-    max_y0 = max(0, int(config.height) - int(roi_height))
-    x0 = 0 if grid_x <= 1 else round(float(col) * float(max_x0) / float(grid_x - 1))
-    y0 = 0 if grid_y <= 1 else round(float(row) * float(max_y0) / float(grid_y - 1))
+    mode = _resolve_field_origin_sampling_mode(config)
+    x0 = _grid_axis_origin(
+        cell_index=col,
+        grid_size=grid_x,
+        full_size=int(config.width),
+        roi_size=roi_width,
+        centered=mode == "cell_center_grid",
+    )
+    y0 = _grid_axis_origin(
+        cell_index=row,
+        grid_size=grid_y,
+        full_size=int(config.height),
+        roi_size=roi_height,
+        centered=mode == "cell_center_grid",
+    )
     return int(x0), int(y0)
 
 

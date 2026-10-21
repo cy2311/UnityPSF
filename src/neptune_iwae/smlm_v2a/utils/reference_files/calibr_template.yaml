@@ -1,0 +1,26 @@
+# This is the calibration template .yaml file which comprises the complete set of calibration attributes.
+# Should all be None (null), will be automatically filled when loading the calibration pickle dictionaries from the param.InOut
+
+ndim:               # int, dimensionality
+nchannels:          # int, number of channels
+
+Camera:
+  chipszx:          # int, chip size (x-axis)
+  chipszy:          # int, chip size (y-axis)
+  cam_pxszs:        # list (ndim,)
+  scmos_var:        # bool, whether to apply pixel-independent calibrations 
+  QE:               # float, Quantum Efficiency of the camera
+  spur_noise:       # float, spur_noise of the camera
+  offset:           # float / ndarray / torch Tensor, offset of the camera
+  var:              # float / ndarray / torch Tensor, read_out noise of the camera
+  A2D:              # float / ndarray / torch Tensor, Analog-to-Digital convertion of the camera
+  EMGain:           # float, EMGain applied to the camera
+
+CSplinePSF:
+  zFocus:           # int, the focus slice
+  coeff_sizes:      # list (ndim,) 
+  coeff:            # ndarray / torch Tensor (nchannels, coeff_sizes.prod(), 4**ndim)
+
+ChannelTrans:
+  R2Ts:             # ndarray / torch Tensor (nchannels-1, warpdeg**2, 2) xy transformation from reference channel to the targets
+  Ts2R:             # ndarray / torch Tensor (nchannels-1, warpdeg**2, 2) xy transformation from target channels to the reference

@@ -1,0 +1,16 @@
+{
+  "starter_name": "density_1_mu1_starter",
+  "starter_pipeline_config_path": "pipeline_density_1_real_sample_default.json",
+  "starter_checkpoint_path": "../../../../output/experiments/race_uni_density1_cross_eval_mu20000_sigma1000/localization_runtime_standard_conv/runs/density_1/checkpoint_best_jaccard.pt",
+  "starter_best_meta_path": "../../../../output/experiments/race_uni_density1_cross_eval_mu20000_sigma1000/localization_runtime_standard_conv/runs/density_1/best_jaccard.json",
+  "role": "initial_uniform_psf_model",
+  "intended_use": "Neptune bootstrap round-0 starter before NAT/FD correction",
+  "default_bootstrap": {
+    "max_rounds": 4,
+    "min_new_points": 25,
+    "min_relative_growth": 0.01,
+    "nat_model": "order1",
+    "device": "cpu"
+  },
+  "note": "Whole-TIFF harvesting, a first real NAT refit, and a first FD-aware residual-PSF fine-tune are now wired through neptune/neptune_core/harvest.py, neptune/neptune_core/nat_fit.py, and neptune/neptune_core/fd_finetune.py."
+}

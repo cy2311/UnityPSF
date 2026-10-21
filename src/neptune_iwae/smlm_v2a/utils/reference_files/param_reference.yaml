@@ -1,0 +1,117 @@
+# This is the reference .yaml file which comprises the complete set of parameters.
+
+CalibrInOut:
+  cam_path:         # filename of the camera_setting.pkl
+  csplinePSF_path:  # filename of the psf.pkl
+  chnlT_path:       # filename of the channel_transfer.pkl
+
+ExpInOut:
+  experiment_out:   # main output dir
+  checkpoint_init:  # initialise from checkpoint (i.e. resume training)
+  
+Meta:
+  version:
+
+Camera:
+  cam_type: PerfectCamera
+  cam_pxszs: # list (ndim,), must read from the Calibration when loading the param file with specified CalibrInOut
+
+Hardware:
+  device: cuda:0
+  device_simulation: cuda:0
+  num_worker_train: 0
+  torch_threads: 4
+  unix_niceness: 0
+  torch_multiprocessing_sharing_strategy:
+
+DataType:  
+  i_type: int32   # allowed are int16/short, int32/int, int64/long
+  f_type: float32 # allowed are float16/half, float32/float, float64/double
+
+HyperParameter:
+  epochs: 1000
+  batch_size: 64
+  channels_in: 3
+  channels_out: 10
+
+  architecture: DoubleUNet
+  arch_param:
+    depth:                  # for SingleUNet
+    depth_shared: 2         # for DoubleUNet
+    depth_union: 2          # for DoubleUNet
+    nfeatures_init: 48
+    nfeatures_inter:
+    norm_start_level: -1
+    norm_groups: 0          # =0 for BatchNorm, <0 for No Normalization 
+    activation: ELU
+    dropout_start_level:  
+    p_dropout: -0.1         # <0 for No DropOut
+    pool_mode: StrideConv
+    upsample_mode: nearest
+    depthwise: true
+    inter_activation:
+    norm_head_groups: 0     # =0 for BatchNorm, <0 for No Normalization
+    final_activation: ELU
+    kaiming_normal: true
+    
+  optimizer: AdamW
+  opt_param:
+    lr: 0.0006
+    weight_decay: 0.1
+  
+  learning_rate_scheduler: StepLR
+  learning_rate_scheduler_param:
+    step_size: 10
+    gamma: 0.9
+
+  grad_mod: true
+  loss_weight: [1.0, 1.0]  #[loss_gmm, loss_bkg] for GMM Loss
+
+  auto_restart_param:
+    num_restarts: 5
+    restart_treshold: 100
+
+DataFilter:
+  disabled_attributes:            # attributes to disable
+  emitter_label_photon_min: 100.0 # when generating target(labels), emitters of photon below this will be thresholded out
+  max_number_targets: 250         # when generating target(labels), number of emitters per frame (within the emitter.extents won't exceed this)
+
+Scaling:          # if some values are missing they will be auto-set as described in the respective comments below
+  input_scale:    # Simulation.photon_mu_sig[0] / 50.0
+  input_offset:   # 0.5 * (Simulation.bkg_uniform[0] + Simulation.bkg_uniform[1])
+  bkg_max:        # 1.2 * Simulation.bkg_uniform[1]
+  phot_max:       # Simulation.photon_mu_sig[0] + 8.0 * Simulation.photon_mu_sig[1]
+  z_max:          # 1.2 * Simulation.emitter_extent[2][1]
+
+Simulation:
+  mode: acquisition
+  train_ds_size: 10000  # number of frames for training dataset
+  test_ds_size: 512     # number of frames for testing dataset
+
+  ndim: 3
+  emitter_extent: [[0, 40], [0, 40], null]  # list (ndim,) emitter_extent[2] will be autofilled from CalibrInOut if ndim==3 
+  density: 1.0    # either density (in um-2) xor emitter avg
+  em_avg:         # either density (in um-2) xor emitter avg
+
+  nchannels: 1
+  fluorID:
+  weights:
+  frac_mu:
+
+  photon_range: [100, 20000]    # used for frame-independent simulation, lower and upper bound for Unionform sampling
+  photon_mu_sig: [20000, 1000]  # used for blinking simulation, mu and sig for Normal sampling
+  lifetime_avg: 2.0             # used for blinking simulation, tau for Exponential sampling
+  photon_threshold: 1.0e-6      # used for blinking simulation to clamp the sampled photons
+
+  bkg_uniform:  [200, 1000]     # used for Unionform sampling for background
+
+PostProcessing: SpatialIntegration
+PostProcessingParam:
+  raw_th: 0.5
+  split_th: 0.6
+
+Evaluation:
+  match_dims: 3
+  dist_tolz: 500.0  # unit = nm
+  dist_tolr: 250.0  # unit = nm
+  dist_tolvol:      # usually not specified when dist_tolz and dist_tolr are set

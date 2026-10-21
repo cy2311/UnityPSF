@@ -121,6 +121,7 @@ def _write_filtered_rows_streaming(
         "quality_psf_xy_nm_rows": 0,
         "after_prob": 0,
         "after_frame": 0,
+        "after_emitter_z": 0,
         "after_locprec_xy_nm": 0,
         "after_llrel": 0,
         "after_psf_xy_nm": 0,
@@ -168,6 +169,16 @@ def _write_filtered_rows_streaming(
                 if config.frame_max is not None and frame > int(config.frame_max):
                     continue
             summary["after_frame"] += 1
+
+            z_nm = _optional_float(row_out.get("z"))
+            if config.emitter_z_min_nm is not None or config.emitter_z_max_nm is not None:
+                if z_nm is None:
+                    continue
+                if config.emitter_z_min_nm is not None and z_nm <= float(config.emitter_z_min_nm):
+                    continue
+                if config.emitter_z_max_nm is not None and z_nm >= float(config.emitter_z_max_nm):
+                    continue
+            summary["after_emitter_z"] += 1
 
             llrel = _first_optional_float(row_out, ("llrel", "LLrel"))
             psf_xy_nm = _psf_xy_nm_from_row(row_out)
@@ -245,6 +256,8 @@ def _filter_config_from_args(args: argparse.Namespace) -> FilterConfig:
         prob_min=args.prob_min,
         frame_min=args.frame_min,
         frame_max=args.frame_max,
+        emitter_z_min_nm=args.emitter_z_min_nm,
+        emitter_z_max_nm=args.emitter_z_max_nm,
         locprec_xy_nm_min=locprec_min,
         locprec_xy_nm_max=args.locprec_xy_nm_max,
         photon_min=getattr(args, "photon_min", None),
@@ -336,6 +349,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--prob-min", type=float, default=0.70)
     parser.add_argument("--frame-min", type=int, default=None)
     parser.add_argument("--frame-max", type=int, default=None)
+    parser.add_argument("--emitter-z-min", "--emitter-z-min-nm", dest="emitter_z_min_nm", type=float, default=None)
+    parser.add_argument("--emitter-z-max", "--emitter-z-max-nm", dest="emitter_z_max_nm", type=float, default=None)
     parser.add_argument("--locprec-xy-nm-min", type=float, default=None)
     parser.add_argument("--locprec-xy-nm-max", type=float, default=None)
     parser.add_argument("--photon-min", type=float, default=None)
@@ -414,6 +429,8 @@ def run(args: argparse.Namespace) -> dict[str, object]:
             "prob_min": args.prob_min,
             "frame_min": args.frame_min,
             "frame_max": args.frame_max,
+            "emitter_z_min_nm": args.emitter_z_min_nm,
+            "emitter_z_max_nm": args.emitter_z_max_nm,
             "locprec_xy_nm_min": filter_config.locprec_xy_nm_min,
             "locprec_xy_nm_max": args.locprec_xy_nm_max,
             "photon_min": getattr(args, "photon_min", None),

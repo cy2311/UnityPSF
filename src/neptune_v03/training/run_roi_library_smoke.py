@@ -153,6 +153,7 @@ def write_roi_library_smoke_diagnostics(
         condition_providers_by_domain=conditioning["providers"],
         append_domain_onehot=conditioning["append_domain_onehot"],
         domain_names=conditioning["domain_names"],
+        condition_feature_dim=conditioning["condition_feature_dim"],
     )(epoch=1)[0].inputs
     p_maps = _predict_p_maps(model, loc_batch.model_input)
     samples = sample_detection_posterior(

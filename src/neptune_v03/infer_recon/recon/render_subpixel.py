@@ -55,6 +55,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--uncertainty-min-sigma-px", type=float, default=0.75)
     parser.add_argument("--uncertainty-max-sigma-px", type=float, default=6.0)
     parser.add_argument("--uncertainty-bin-size-px", type=float, default=0.5)
+    parser.add_argument("--save-colorbar", action="store_true")
     parser.add_argument("--suffix", type=str, default="subpixel_standard")
     return parser.parse_args()
 
@@ -369,14 +370,11 @@ def render(args: argparse.Namespace) -> dict[str, object]:
     rgb = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     png_path = args.output_dir / f"reconstruction_{args.suffix}.png"
     tiff_path = args.output_dir / f"reconstruction_{args.suffix}.tiff"
-    linear_density_path = args.output_dir / f"reconstruction_{args.suffix}_density_linear_float32.tiff"
-    linear_rgb_path = args.output_dir / f"reconstruction_{args.suffix}_rgb_linear_float32.tiff"
     colorbar_path = args.output_dir / f"reconstruction_{args.suffix}_z_colorbar.png"
     Image.fromarray(rgb, mode="RGB").save(png_path)
     tifffile.imwrite(tiff_path, rgb, photometric="rgb")
-    tifffile.imwrite(linear_density_path, density.astype(np.float32, copy=False))
-    tifffile.imwrite(linear_rgb_path, linear_rgb.astype(np.float32, copy=False), photometric="rgb")
-    _draw_colorbar(colorbar_path, z_min=float(args.z_min_nm), z_max=float(args.z_max_nm))
+    if args.save_colorbar:
+        _draw_colorbar(colorbar_path, z_min=float(args.z_min_nm), z_max=float(args.z_max_nm))
     summary = {
         "renderer": "infer_recon_subpixel_gaussian_v2_smap_display_contract",
         "predictions": str(args.predictions),
@@ -407,11 +405,9 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         "display_imax_min": float(args.display_imax_min),
         "display_quantile": _smap_quantile_from_imax_min(float(args.display_imax_min)) if str(args.display_mode) == "quantile" else None,
         "normalization_fov_rendered_px": list(normalization_fov) if normalization_fov is not None else None,
-        "linear_density_path": str(linear_density_path),
-        "linear_rgb_path": str(linear_rgb_path),
         "png_path": str(png_path),
         "tiff_path": str(tiff_path),
-        "colorbar_path": str(colorbar_path),
+        "colorbar_path": str(colorbar_path) if args.save_colorbar else None,
     }
     (args.output_dir / f"reconstruction_{args.suffix}_summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
     return summary

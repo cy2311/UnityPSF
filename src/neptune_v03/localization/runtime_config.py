@@ -3,6 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+import numpy as np
+import torch
+
 from neptune_v03.localization.smlm_targets import V03_PXYZ_TARGET_ORDER
 
 
@@ -139,6 +142,11 @@ def resolve_localization_model_config(config: Mapping[str, Any]) -> tuple[str, d
     overrides = _localization_overrides(config, train_cfg)
     for key in (
         "depthwise",
+        "bottleneck_kernel_size",
+        "bottleneck_small_kernel_size",
+        "unireplk_kernel_size",
+        "wtconv_context_levels",
+        "wtconv_context_kernel_size",
         "depth_shared",
         "depth_union",
         "nfeatures_init",
@@ -266,7 +274,11 @@ def _resolved_contract(
     contract: dict[str, Any] = {
         "model": {
             "name": str(model_name),
-            "output": "smlm_10ch" if str(model_name).startswith("active_smlm_") else "localization",
+            "output": (
+                "smlm_10ch"
+                if str(model_name).startswith("active_smlm_")
+                else "localization"
+            ),
         },
         "batch_provider": {
             "name": str(batch_provider["name"]),
@@ -469,6 +481,10 @@ def _online_provider_config(
         online_cfg.get("dual_domain_coeff_maps", ()),
         base_dir=None if config_base_dir is None else Path(config_base_dir),
     )
+    pupil_carrier_complex = _pupil_carrier_complex(
+        online_cfg.get("pupil_carrier_complex_npz"),
+        base_dir=None if config_base_dir is None else Path(config_base_dir),
+    )
     if dual_domain_coeff_maps and int(online_cfg.get("domain_count", 2)) != len(dual_domain_coeff_maps):
         raise ValueError("domain_count must match dual_domain_coeff_maps length")
     simulation_cfg = _optional_mapping(config.get("simulation"), "simulation") or {}
@@ -510,6 +526,11 @@ def _online_provider_config(
             "pixel_size_nm_y": pixel_size_nm_y,
             "wavelength_nm": float(online_cfg.get("wavelength_nm", optical_cfg.get("wavelength_nm", 660.0))),
             "na": float(online_cfg.get("NA", online_cfg.get("na", optical_cfg.get("NA", 1.4)))),
+            "refmed": float(online_cfg.get("refmed", vector_cfg.get("refmed", optical_cfg.get("n_medium", 1.518)))),
+            "refcov": float(online_cfg.get("refcov", vector_cfg.get("refcov", optical_cfg.get("n_medium", 1.518)))),
+            "refimm": float(online_cfg.get("refimm", vector_cfg.get("refimm", optical_cfg.get("n_medium", 1.518)))),
+            "objstage0": float(online_cfg.get("objstage0", vector_cfg.get("objstage0", 0.0))),
+            "otf_rescale_xy": tuple(float(value) for value in online_cfg.get("otf_rescale_xy", vector_cfg.get("otf_rescale_xy", (0.0, 0.0)))),
             "npupil": int(online_cfg.get("npupil", vector_cfg.get("npupil", 128))),
             "vector_psf_size": int(online_cfg.get("vector_psf_size", (online_cfg.get("lut_simulation") or {}).get("psf_size", vector_cfg.get("psf_size", 51)))),
             "vector_batch_size": int(online_cfg.get("vector_batch_size", vector_cfg.get("batch_size", 96))),
@@ -532,6 +553,7 @@ def _online_provider_config(
             "domain_count": int(online_cfg.get("domain_count", 2)),
             "domain_balance_mode": str(online_cfg.get("domain_balance_mode", "fixed")),
             "dual_domain_coeff_maps": dual_domain_coeff_maps,
+            "pupil_carrier_complex": pupil_carrier_complex,
             "batch_strategy": str(online_cfg.get("batch_strategy", "triplet")),
             "sequence_window_chunks": int(online_cfg.get("sequence_window_chunks", 1)),
             "sequence_count": int(online_cfg.get("sequence_count", 64)),
@@ -541,6 +563,12 @@ def _online_provider_config(
             ),
             "camera_baseline": float((config.get("camera") or {}).get("baseline", online_cfg.get("camera_baseline", 398.6))),
             "camera_e_per_adu": float((config.get("camera") or {}).get("e_per_adu", online_cfg.get("camera_e_per_adu", 1.020784562122306))),
+            "input_signal_gain": float(online_cfg.get("input_signal_gain", 1.0)),
+            "input_signal_anchor_adu": (
+                None
+                if online_cfg.get("input_signal_anchor_adu") is None
+                else float(online_cfg["input_signal_anchor_adu"])
+            ),
             "pxyz_target_order": str(online_cfg.get("pxyz_target_order", "legacy_iwae")),
             "photon_scale": (
                 None
@@ -775,6 +803,18 @@ def _dual_domain_coeff_maps(value: Any, *, base_dir: Path | None = None) -> tupl
             raise ValueError("dual_domain_coeff_maps entries must include coeff_maps_npz, alternating_coeff_maps_npz, or path")
         maps.append({"name": name, "coeff_maps_npz": _resolve_path(str(path), base_dir=base_dir)})
     return tuple(maps)
+
+
+def _pupil_carrier_complex(value: Any, *, base_dir: Path | None) -> torch.Tensor | None:
+    if value in (None, ""):
+        return None
+    path = Path(_resolve_path(str(value), base_dir=base_dir))
+    with np.load(path, allow_pickle=False) as payload:
+        key = "carrier_complex" if "carrier_complex" in payload else "complex_pupil"
+        carrier = np.asarray(payload[key], dtype=np.complex64)
+    if carrier.ndim != 2 or carrier.shape[0] != carrier.shape[1]:
+        raise ValueError("pupil carrier must be a square complex pupil array")
+    return torch.from_numpy(carrier)
 
 
 def _resolve_path(value: str, *, base_dir: Path | None) -> str:

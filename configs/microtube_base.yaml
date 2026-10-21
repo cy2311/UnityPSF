@@ -96,24 +96,12 @@ train:
     conditioning_enabled: true
     random_subregion_enabled: true
     conditioning_mode: film
-    simulation_backend: lut
+    simulation_backend: cuda_gemm
+    vector_psf_size: 51
     simulation_output_device: renderer
     cached_window_order: auto
     cached_window_max_gpu_sequences: 4
     film_hidden_dim: 32
-    lut_simulation:
-      zmap_npz: null
-      field_stride: 16
-      z_step_nm: 20.0
-      dtype: fp16
-      subpixel_bins: 1
-      z_scale_nm: 600.0
-      place_delta: 0
-      subpixel_center_offset: 0.5
-      shift_sign: 1
-      device: cuda
-      psf_size: 51
-      dual_domain_zmaps: []
     amp_enabled: true
     amp_dtype: float16
     subregion_sampling_mode: random_continuous

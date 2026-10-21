@@ -166,6 +166,11 @@ def build_localization_model_registry():
             disabled_attr=params.get("disabled_attr"),
             kaiming_normal=bool(params.get("kaiming_normal", True)),
             depthwise=bool(params.get("depthwise", True)),
+            bottleneck_kernel_size=int(params.get("bottleneck_kernel_size", 3)),
+            bottleneck_small_kernel_size=int(params.get("bottleneck_small_kernel_size", 5)),
+            unireplk_kernel_size=int(params.get("unireplk_kernel_size", 0)),
+            wtconv_context_levels=int(params.get("wtconv_context_levels", 0)),
+            wtconv_context_kernel_size=int(params.get("wtconv_context_kernel_size", 5)),
             z_mu_activation=(None if params.get("z_mu_activation") is None else str(params["z_mu_activation"])),
         )
 

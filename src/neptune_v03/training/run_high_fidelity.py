@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import random
 import struct
 import zlib
@@ -52,8 +53,18 @@ from neptune_v03.roi_library.loc_harvest import (
     build_roi_bank_from_loc_harvest,
 )
 from neptune_v03.runtime import ensure_run_layout, profiling, write_run_manifest, write_stage_status
-from neptune_v03.training import build_trainer_runtime, train_epochs
-from neptune_v03.training.localizer_eval import build_localizer_eval_provider, localizer_eval_route, make_legacy_localization_eval_loss
+from neptune_v03.training import (
+    EpochTrainingConfig,
+    TrainingResumeState,
+    build_trainer_runtime,
+    load_training_checkpoint,
+    train_epochs,
+)
+from neptune_v03.training.localizer_eval import (
+    build_localizer_eval_provider,
+    localizer_eval_route,
+    make_legacy_localization_eval_loss,
+)
 from neptune_v03.training.loop import TrainingRunEpochResult, TrainingStepResult
 
 
@@ -238,7 +249,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-root", required=True, help="Directory containing the run directory.")
     parser.add_argument("--run-name", required=True, help="Relative run directory name.")
     parser.add_argument("--seed", type=int, default=0, help="Training batch seed.")
+    parser.add_argument("--resume-checkpoint", help="Checkpoint whose completed epoch should be resumed.")
     return parser.parse_args()
+
+
+def resume_epoch_training_config(
+    config: EpochTrainingConfig,
+    state: TrainingResumeState,
+) -> EpochTrainingConfig:
+    next_epoch = int(state.epoch) + 1
+    if next_epoch > int(config.stop_epoch):
+        raise ValueError(
+            f"resume checkpoint epoch {state.epoch} has already reached stop epoch {config.stop_epoch}"
+        )
+    return replace(
+        config,
+        start_epoch=next_epoch,
+        global_step_start=int(state.global_step),
+    )
 
 
 def main() -> int:
@@ -255,10 +283,41 @@ def main() -> int:
             config_base_dir=config_base_dir,
             seed=int(args.seed),
         )
+        if str(os.environ.get("NEPTUNE_V03_OPTIMIZED_TRAINING", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            runtime_config.setdefault("optimizer", {}).setdefault("params", {})["fused"] = True
         model_name = str(runtime_config["model"]["name"])
         condition_store = _condition_store_from_runtime_config(runtime_config)
         gamma_route = _roi_bank_gamma_route(train_cfg, config=config, config_base_dir=config_base_dir)
         localizer_eval = localizer_eval_route(train_cfg, config_base_dir=config_base_dir)
+        _write_initial_physical_state(layout, runtime_config)
+        runtime = build_trainer_runtime(
+            runtime_config,
+            layout=layout,
+            model_registry=build_localization_model_registry(),
+            batch_provider_overrides=_condition_store_batch_provider_overrides(condition_store),
+        )
+        if str(os.environ.get("NEPTUNE_V03_OPTIMIZED_TRAINING", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            torch.backends.cudnn.benchmark = True
+            compile_mode = str(os.environ.get("NEPTUNE_V03_COMPILE_MODE", "reduce-overhead"))
+            runtime = replace(runtime, model=torch.compile(runtime.model, mode=compile_mode, dynamic=False))
+            if runtime.loss_fn is not None:
+                runtime = replace(runtime, loss_fn=torch.compile(runtime.loss_fn, mode=compile_mode, dynamic=False))
+        resume_state = None
+        if args.resume_checkpoint is not None:
+            resume_path = Path(args.resume_checkpoint).resolve()
+            if not resume_path.is_file():
+                raise FileNotFoundError(resume_path)
+            resume_state = load_training_checkpoint(
+                resume_path,
+                model=runtime.model,
+                optimizer=runtime.optimizer,
+                scheduler=runtime.scheduler,
+                map_location=next(runtime.model.parameters()).device,
+            )
+            runtime = replace(
+                runtime,
+                config=resume_epoch_training_config(runtime.config, resume_state),
+            )
         write_run_manifest(
             layout,
             {
@@ -271,14 +330,15 @@ def main() -> int:
                 "resolved_contract": runtime_config.get("resolved_contract", {}),
                 "roi_bank_gamma": gamma_route,
                 "localizer_eval": localizer_eval,
+                "resume": None
+                if resume_state is None
+                else {
+                    "checkpoint_path": str(resume_state.path),
+                    "checkpoint_epoch": int(resume_state.epoch),
+                    "checkpoint_global_step": int(resume_state.global_step),
+                    "next_epoch": int(runtime.config.start_epoch),
+                },
             },
-        )
-        _write_initial_physical_state(layout, runtime_config)
-        runtime = build_trainer_runtime(
-            runtime_config,
-            layout=layout,
-            model_registry=build_localization_model_registry(),
-            batch_provider_overrides=_condition_store_batch_provider_overrides(condition_store),
         )
         gamma_hook = _build_roi_bank_gamma_hook(
             train_cfg,
@@ -289,13 +349,27 @@ def main() -> int:
             condition_store=condition_store,
         )
         gamma_epoch_hook, gamma_batch_hook = _gamma_hook_bindings(gamma_hook, train_cfg.get("roi_bank_gamma"))
+        if resume_state is not None and gamma_epoch_hook is not None:
+            gamma_epoch_hook(
+                TrainingRunEpochResult(
+                    epoch=int(resume_state.epoch),
+                    step_count=int(resume_state.step_count),
+                    mean_loss=0.0,
+                    metrics_path=layout.metrics_dir / "training_metrics.jsonl",
+                    checkpoint_path=resume_state.path,
+                    global_step=int(resume_state.global_step),
+                )
+            )
         eval_provider = build_localizer_eval_provider(
             train_cfg,
             config_base_dir=config_base_dir,
             root_config=config,
             condition_store=condition_store,
         )
-        eval_loss_fn = make_legacy_localization_eval_loss(runtime.loss_fn, train_cfg, root_config=config) if eval_provider is not None else None
+        if eval_provider is None:
+            eval_loss_fn = None
+        else:
+            eval_loss_fn = make_legacy_localization_eval_loss(runtime.loss_fn, train_cfg, root_config=config)
         results = train_epochs(
             model=runtime.model,
             optimizer=runtime.optimizer,
@@ -311,6 +385,7 @@ def main() -> int:
             checkpoint_extra_fn=_physical_checkpoint_extra_fn(layout),
         )
         gamma_updates = _count_gamma_updates(layout)
+        _enforce_physical_update_contract(layout, train_cfg, gamma_updates=gamma_updates)
         best_checkpoint_path = layout.checkpoints_dir / "checkpoint_best.pt"
         write_stage_status(
             layout,
@@ -322,6 +397,13 @@ def main() -> int:
                 "training_budget_mode": "max_batches" if runtime.config.max_batches is not None else "epochs",
                 "max_batches": runtime.config.max_batches,
                 "model_name": model_name,
+                "resume": None
+                if resume_state is None
+                else {
+                    "checkpoint_path": str(resume_state.path),
+                    "checkpoint_epoch": int(resume_state.epoch),
+                    "checkpoint_global_step": int(resume_state.global_step),
+                },
                 "resolved_contract": runtime_config.get("resolved_contract", {}),
                 "roi_bank_gamma": {**gamma_route, "updates": gamma_updates},
                 "localizer_eval": {
@@ -866,6 +948,29 @@ def _read_current_physical_state(layout) -> dict[str, object] | None:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def merge_zernike_delta_maps(
+    base_maps: np.ndarray,
+    *,
+    base_mode_order: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+    delta_maps: np.ndarray | torch.Tensor,
+    delta_mode_order: tuple[tuple[int, int], ...] | list[tuple[int, int]],
+) -> np.ndarray:
+    merged = np.asarray(base_maps, dtype=np.float32).copy()
+    delta = torch.as_tensor(delta_maps, dtype=torch.float32).detach().cpu().numpy()
+    base_order = tuple((int(n), int(m)) for n, m in base_mode_order)
+    update_order = tuple((int(n), int(m)) for n, m in delta_mode_order)
+    if merged.ndim != 3 or delta.ndim != 3 or merged.shape[1:] != delta.shape[1:]:
+        raise ValueError("base and delta Zernike maps must have matching (H,W) dimensions")
+    if merged.shape[0] != len(base_order) or delta.shape[0] != len(update_order):
+        raise ValueError("Zernike map channels must match their mode order")
+    base_indices = {mode: index for index, mode in enumerate(base_order)}
+    for delta_index, mode in enumerate(update_order):
+        if mode not in base_indices:
+            raise ValueError(f"gamma update mode {mode!r} is missing from the base Zernike map")
+        merged[base_indices[mode]] += delta[delta_index]
+    return merged
+
+
 def _export_gamma_feedback_coeff_maps(
     objective: GammaProjectionObjective,
     *,
@@ -880,9 +985,17 @@ def _export_gamma_feedback_coeff_maps(
     gamma_t = gamma.detach().to(device=objective.device, dtype=torch.float32)
     before_gamma = torch.zeros_like(gamma.detach()) if gamma_before is None else gamma_before.detach()
     before_gamma_t = before_gamma.to(device=objective.device, dtype=torch.float32)
-    delta_cache: dict[tuple[int, int], torch.Tensor] = {}
+    stack_cache: dict[tuple[int, int], tuple[torch.Tensor, torch.Tensor, list[tuple[int, int]]]] = {}
     mode_order: list[tuple[int, int]] | None = None
     output: list[tuple[str, str]] = []
+    full_base_maps: dict[str, tuple[np.ndarray, list[tuple[int, int]]]] = {}
+    if bool(objective.config.preserve_full_base_modes):
+        for domain_name, source_path in objective.config.base_coeff_maps:
+            with np.load(source_path, allow_pickle=False) as payload:
+                full_base_maps[str(domain_name)] = (
+                    np.asarray(payload["zernike_maps_nm"], dtype=np.float32),
+                    [tuple(int(value) for value in row) for row in np.asarray(payload["mode_order"], dtype=np.int64)],
+                )
     domains = objective.base_maps_by_domain
     if not domains:
         default_shape = (int(objective.nat_config.img_size_y), int(objective.nat_config.img_size_x))
@@ -900,8 +1013,8 @@ def _export_gamma_feedback_coeff_maps(
                 f"expected {len(objective.nat_config.aberrations)}"
             )
         shape_hw = (int(base_maps_t.shape[1]), int(base_maps_t.shape[2]))
-        delta_maps = delta_cache.get(shape_hw)
-        if delta_maps is None:
+        stacks = stack_cache.get(shape_hw)
+        if stacks is None:
             domain_nat_config = replace(
                 objective.nat_config,
                 img_size_y=int(shape_hw[0]),
@@ -920,10 +1033,23 @@ def _export_gamma_feedback_coeff_maps(
                 device=objective.device,
             )
             delta_maps = after_stack.maps_nm - before_stack.maps_nm
-            delta_cache[shape_hw] = delta_maps
+            stacks = (after_stack.maps_nm, delta_maps, after_stack.mode_order)
+            stack_cache[shape_hw] = stacks
             if mode_order is None:
                 mode_order = after_stack.mode_order
-        maps = (base_maps_t + delta_maps).detach().cpu().numpy()
+        after_maps, delta_maps, update_mode_order = stacks
+        if bool(objective.config.preserve_full_base_modes):
+            source_maps, source_order = full_base_maps[str(domain_name)]
+            maps = merge_zernike_delta_maps(
+                source_maps,
+                base_mode_order=source_order,
+                delta_maps=after_maps,
+                delta_mode_order=update_mode_order,
+            )
+            output_mode_order = source_order
+        else:
+            maps = (base_maps_t + after_maps).detach().cpu().numpy()
+            output_mode_order = mode_order or list(objective.nat_config.aberrations)
         if str(artifact_policy).lower() in {"compact", "compact_latest", "latest"}:
             path = (
                 layout.artifacts_dir
@@ -946,7 +1072,10 @@ def _export_gamma_feedback_coeff_maps(
         np.savez_compressed(
             path,
             zernike_maps_nm=maps.astype(np.float32),
-            mode_order=np.asarray(mode_order or list(objective.nat_config.aberrations), dtype=np.int64),
+            mode_order=np.asarray(output_mode_order, dtype=np.int64),
+            gamma_values_nm=gamma_t.detach().cpu().numpy().astype(np.float32),
+            gamma_before_values_nm=before_gamma_t.detach().cpu().numpy().astype(np.float32),
+            physical_state_semantics=np.asarray("base_plus_cumulative_gamma"),
             gamma_delta_abs_max_nm=np.asarray(float(delta_maps.detach().abs().max().cpu().item()), dtype=np.float32),
             gamma_delta_abs_mean_nm=np.asarray(float(delta_maps.detach().abs().mean().cpu().item()), dtype=np.float32),
         )
@@ -1048,6 +1177,11 @@ def _build_vector_roi_gamma_objective(
             refcov=float(gamma_cfg.get("refcov", sim_vector_cfg.get("refcov", optical_cfg.get("n_medium", 1.518)))),
             refimm=float(gamma_cfg.get("refimm", sim_vector_cfg.get("refimm", optical_cfg.get("n_medium", 1.518)))),
             objstage0=float(gamma_cfg.get("objstage0", sim_vector_cfg.get("objstage0", 0.0))),
+            zemit0=(
+                None
+                if gamma_cfg.get("zemit0", online_cfg.get("zemit0", sim_vector_cfg.get("zemit0"))) is None
+                else float(gamma_cfg.get("zemit0", online_cfg.get("zemit0", sim_vector_cfg.get("zemit0"))))
+            ),
             otf_rescale_xy=tuple(float(v) for v in gamma_cfg.get("otf_rescale_xy", sim_vector_cfg.get("otf_rescale_xy", (0.0, 0.0)))),
             renderer_batch_size=int(gamma_cfg.get("renderer_batch_size", sim_vector_cfg.get("batch_size", 64))),
             over_cut_px=int(gamma_cfg.get("roi_bank_over_cut_px", gamma_cfg.get("over_cut_px", 0))),
@@ -1063,6 +1197,12 @@ def _build_vector_roi_gamma_objective(
                 )
             ),
             nat_config_kind=str(gamma_cfg.get("nat_config_kind", bootstrap_cfg.get("nat_config_kind", "order1"))),
+            pupil_carrier_complex_npz=(
+                None
+                if gamma_cfg.get("pupil_carrier_complex_npz", online_cfg.get("pupil_carrier_complex_npz")) is None
+                else str(gamma_cfg.get("pupil_carrier_complex_npz", online_cfg.get("pupil_carrier_complex_npz")))
+            ),
+            preserve_full_base_modes=bool(gamma_cfg.get("preserve_full_base_modes", False)),
         ),
         device=device,
     )
@@ -1472,6 +1612,25 @@ def _sample_roi_bank_posterior_update_from_current_model(
             seed=int(gamma_cfg.get("seed", 0)),
             camera_backward=_camera_backward_from_training_config(train_cfg),
             over_cut_px=int(gamma_cfg.get("roi_bank_over_cut_px", gamma_cfg.get("over_cut_px", 0))),
+            dh_pair_shape_ncc_min=(
+                None
+                if gamma_cfg.get("dh_pair_shape_ncc_min") is None
+                else float(gamma_cfg.get("dh_pair_shape_ncc_min"))
+            ),
+            dh_pair_shape_rmse_max=(
+                None
+                if gamma_cfg.get("dh_pair_shape_rmse_max") is None
+                else float(gamma_cfg.get("dh_pair_shape_rmse_max"))
+            ),
+            dh_pair_probability_weight=float(gamma_cfg.get("dh_pair_probability_weight", 0.0)),
+            dh_pair_shape_ncc_weight=float(gamma_cfg.get("dh_pair_shape_ncc_weight", 0.0)),
+            dh_pair_shape_rmse_weight=float(gamma_cfg.get("dh_pair_shape_rmse_weight", 0.0)),
+            dh_pair_maximum_cost=(
+                None
+                if gamma_cfg.get("dh_pair_maximum_cost") is None
+                else float(gamma_cfg.get("dh_pair_maximum_cost"))
+            ),
+            dh_pair_fit_radius_px=int(gamma_cfg.get("dh_pair_fit_radius_px", 5)),
         ),
         condition_builder=condition_builder,
         frame_proc=frame_proc,
@@ -1815,8 +1974,27 @@ def _stack_record_loss_masks(records: Sequence[ROIRecord]) -> torch.Tensor | Non
     return torch.stack(concrete_masks, dim=0)
 
 
+def _roi_bank_loss_mask_mode(bank: ROIBank) -> str:
+    modes = {str(record.summary.get("loss_mask_mode", "valid_core")) for record in bank.records}
+    return next(iter(modes)) if len(modes) == 1 else "mixed"
+
+
 def _record_loss_mask(record: ROIRecord) -> torch.Tensor | None:
     summary = dict(record.summary or {})
+    if summary.get("loss_mask_mode") == "union_boxes":
+        height, width = (int(v) for v in np.asarray(record.background_smoothed).shape)
+        mask = torch.zeros((height, width), dtype=torch.bool)
+        boxes = summary.get("loss_mask_boxes_xyxy")
+        if not isinstance(boxes, list) or not boxes:
+            raise ValueError(f"union_boxes loss mask requires boxes for roi_id={record.roi_id}")
+        for box in boxes:
+            if not isinstance(box, (list, tuple)) or len(box) != 4:
+                raise ValueError(f"invalid loss-mask box {box!r} for roi_id={record.roi_id}")
+            x0, y0, x1, y1 = (int(round(float(value))) for value in box)
+            if x0 < 0 or y0 < 0 or x1 > width or y1 > height or x0 >= x1 or y0 >= y1:
+                raise ValueError(f"loss-mask box {(x0, y0, x1, y1)} exceeds ROI bounds {(width, height)}")
+            mask[y0:y1, x0:x1] = True
+        return mask
     if "valid_core_size_px" not in summary or "valid_core_offset_xy_px" not in summary:
         return None
     height, width = (int(v) for v in np.asarray(record.background_smoothed).shape)
@@ -2011,7 +2189,7 @@ def _build_roi_projection_objective(
             "selected_roi_count": len(context.bank.records),
             "posterior_max_emitters": max_emitters,
             "over_cut_px": over_cut,
-            "loss_mask_mode": "valid_core" if context.loss_mask is not None else "over_cut",
+            "loss_mask_mode": _roi_bank_loss_mask_mode(context.bank) if context.loss_mask is not None else "over_cut",
             "loss_mask_pixel_count": 0 if context.loss_mask is None else int(context.loss_mask.sum().item()),
             "posterior_active_emitters": selected_sampled_emitters,
             "best_step": selected_step,
@@ -3062,15 +3240,21 @@ def _auto_build_roi_bank(
             if gamma_cfg.get("roi_bank_valid_core_size_px", gamma_cfg.get("valid_core_size_px")) is None
             else int(gamma_cfg.get("roi_bank_valid_core_size_px", gamma_cfg.get("valid_core_size_px")))
         ),
+        infer_on_raw_adu=bool(
+            gamma_cfg.get("infer_on_raw_adu", _uses_model_infer(roi_source))
+        ),
     )
     if _uses_model_infer(roi_source):
-        return _auto_build_roi_bank_from_loc_harvest(
+        return _filter_roi_bank_by_emitter_count(
+            _auto_build_roi_bank_from_loc_harvest(
             gamma_cfg,
             roi_source=roi_source,
             model=model,
             train_cfg=train_cfg,
             config=config,
             roi_size=roi_size,
+            ),
+            gamma_cfg=gamma_cfg,
         )
     bank = build_roi_bank_from_inference(
         raw_frames_photon=roi_source.raw_path,
@@ -3084,7 +3268,7 @@ def _auto_build_roi_bank(
         ),
         config=config,
     )
-    return ROIBank(
+    return _filter_roi_bank_by_emitter_count(ROIBank(
         records=bank.records,
         config=bank.config,
         metadata={
@@ -3094,6 +3278,36 @@ def _auto_build_roi_bank(
             "roi_bank_infer_source": "bright_pixel",
             "roi_bank_observed_units": "camera_corrected_photons" if camera_backward is not None else "raw_input",
             **_roi_bank_camera_backward_metadata(bank.metadata, camera_backward),
+        },
+        empty_grid_cell_ids=bank.empty_grid_cell_ids,
+        format_version=bank.format_version,
+    ), gamma_cfg=gamma_cfg)
+
+
+def _filter_roi_bank_by_emitter_count(bank: ROIBank, *, gamma_cfg: Mapping[str, Any]) -> ROIBank:
+    minimum = gamma_cfg.get(
+        "roi_bank_min_middle_frame_emitters_exclusive",
+        gamma_cfg.get("roi_bank_min_emitters_exclusive"),
+    )
+    if minimum is None:
+        return bank
+    threshold = int(minimum)
+    def middle_frame_emitter_count(record: ROIRecord) -> int:
+        start, stop = (int(record.frame_window[0]), int(record.frame_window[1]))
+        middle_frame = start + (stop - start) // 2
+        return sum(int(emitter.frame_index) == middle_frame for emitter in record.emitters)
+
+    records = tuple(record for record in bank.records if middle_frame_emitter_count(record) > threshold)
+    if not records:
+        raise ValueError(f"ROI library has no records with middle_frame_emitter_count > {threshold}")
+    return ROIBank(
+        records=records,
+        config=bank.config,
+        metadata={
+            **bank.metadata,
+            "roi_bank_min_middle_frame_emitters_exclusive": threshold,
+            "roi_bank_record_count_before_middle_frame_filter": len(bank.records),
+            "roi_bank_record_count_after_middle_frame_filter": len(records),
         },
         empty_grid_cell_ids=bank.empty_grid_cell_ids,
         format_version=bank.format_version,
@@ -3138,6 +3352,25 @@ def _auto_build_roi_bank_from_loc_harvest(
             if gamma_cfg.get("roi_bank_infer_max_emitters") is None
             else int(gamma_cfg.get("roi_bank_infer_max_emitters"))
         ),
+        dh_pair_shape_ncc_min=(
+            None
+            if gamma_cfg.get("dh_pair_shape_ncc_min") is None
+            else float(gamma_cfg.get("dh_pair_shape_ncc_min"))
+        ),
+        dh_pair_shape_rmse_max=(
+            None
+            if gamma_cfg.get("dh_pair_shape_rmse_max") is None
+            else float(gamma_cfg.get("dh_pair_shape_rmse_max"))
+        ),
+        dh_pair_probability_weight=float(gamma_cfg.get("dh_pair_probability_weight", 0.0)),
+        dh_pair_shape_ncc_weight=float(gamma_cfg.get("dh_pair_shape_ncc_weight", 0.0)),
+        dh_pair_shape_rmse_weight=float(gamma_cfg.get("dh_pair_shape_rmse_weight", 0.0)),
+        dh_pair_maximum_cost=(
+            None
+            if gamma_cfg.get("dh_pair_maximum_cost") is None
+            else float(gamma_cfg.get("dh_pair_maximum_cost"))
+        ),
+        dh_pair_fit_radius_px=int(gamma_cfg.get("dh_pair_fit_radius_px", 5)),
     )
     bank = build_roi_bank_from_loc_harvest(
         model=model,
@@ -3152,7 +3385,16 @@ def _auto_build_roi_bank_from_loc_harvest(
             "roi_bank_source_alias": roi_source.alias,
             "roi_bank_candidate_mode": roi_source.candidate_mode,
             "roi_bank_infer_source": "loc_harvest_raw_tiff",
-            "roi_bank_harvest_channel_order": "p,photons,x,y,z,photons_sigma,x_sigma,y_sigma,z_sigma,bg",
+            "roi_bank_harvest_channel_order": (
+                "dh_lobe_8ch->lobe_peaks->pair_matching->emitter_xyzph"
+                if bool(getattr(model, "is_dh_lobe_model", False))
+                else "p,photons,x,y,z,photons_sigma,x_sigma,y_sigma,z_sigma,bg"
+            ),
+            "roi_bank_harvest_semantics": (
+                "two DH lobes are pair-matched into one emitter-level xyzph posterior before gamma update"
+                if bool(getattr(model, "is_dh_lobe_model", False))
+                else "legacy emitter-level posterior"
+            ),
             "roi_bank_observed_units": "camera_corrected_photons" if config.camera_backward is not None else "raw_input",
             **_roi_bank_camera_backward_metadata(bank.metadata, config.camera_backward),
         },
@@ -3724,6 +3966,20 @@ def _build_heldout_monitor_context(
 ) -> _HeldoutMonitorContext | None:
     if bank is None:
         return None
+    if gamma_cfg.get("heldout_use_persisted_emitters") is True:
+        raw_frames, background, samples, roi_origin_xy_px, domain_names, loss_mask = _record_projection_tensors(bank)
+        return _HeldoutMonitorContext(
+            bank=bank,
+            mode=mode,
+            split_source=split_source,
+            samples_mask_count=int(samples.mask.sum().item()),
+            raw_frames=raw_frames,
+            background=background,
+            samples=samples,
+            roi_origin_xy_px=roi_origin_xy_px,
+            domain_names=domain_names,
+            loss_mask=loss_mask,
+        )
     objective_mode = str(gamma_cfg.get("roi_bank_objective", gamma_cfg.get("objective_mode", "poisson_nll"))).strip().lower()
     if objective_mode == "importance_wake":
         heldout_cfg = dict(gamma_cfg)
@@ -3760,6 +4016,7 @@ def _build_heldout_monitor_context(
         condition_providers_by_domain=roi_conditioning["providers"],
         append_domain_onehot=roi_conditioning["append_domain_onehot"],
         domain_names=roi_conditioning["domain_names"],
+        condition_feature_dim=roi_conditioning["condition_feature_dim"],
     )(epoch=1)[0].inputs
     samples = sample_detection_posterior(
         model=model,
@@ -3877,6 +4134,37 @@ def _count_gamma_updates(layout) -> int:
     if not path.exists():
         return 0
     return len(path.read_text(encoding="utf-8").splitlines())
+
+
+def _enforce_physical_update_contract(layout, train_cfg: Mapping[str, Any], *, gamma_updates: int) -> None:
+    gamma_cfg = train_cfg.get("roi_bank_gamma")
+    if not isinstance(gamma_cfg, Mapping) or gamma_cfg.get("enabled") is not True:
+        return
+    if gamma_cfg.get("require_physical_update") is not True:
+        return
+    if int(gamma_updates) <= 0:
+        raise RuntimeError(
+            "required DH physical update did not run: gamma_update_metrics.jsonl has no completed updates"
+        )
+    state_path = layout.metadata_dir / "current_physical_state.json"
+    if not state_path.is_file():
+        raise RuntimeError("required DH physical update did not produce current_physical_state.json")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    if str(state.get("source")) != "gamma_feedback":
+        raise RuntimeError(
+            "required DH physical update did not publish gamma feedback state: "
+            f"source={state.get('source')!r}"
+        )
+    coeff_maps = state.get("coeff_maps")
+    if not isinstance(coeff_maps, list) or not coeff_maps:
+        raise RuntimeError("required DH physical update published no coefficient maps")
+    missing = [
+        str(item.get("coeff_maps_npz"))
+        for item in coeff_maps
+        if not isinstance(item, Mapping) or not Path(str(item.get("coeff_maps_npz", ""))).is_file()
+    ]
+    if missing:
+        raise RuntimeError(f"required DH physical update references missing coefficient maps: {missing}")
 
 
 def _gamma_objective_source(gamma_cfg: Mapping[str, Any], *, roi_source: _ROIBankSource | None = None) -> str:

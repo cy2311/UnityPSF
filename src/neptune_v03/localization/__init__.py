@@ -12,6 +12,7 @@ from .losses import ActiveSMLMGMMTargetAdapter, ActiveSMLMGMMLoss, ActiveSMLMLos
 from .materialized_eval import MaterializedDatasetEvalConfig, build_materialized_dataset_eval_provider
 from .microtube_tiff import MicrotubeTiffBatchProviderConfig, build_microtube_tiff_batch_provider
 from .online import OnlineBatchProviderConfig, build_online_batch_provider
+from .cuda_gemm_renderer import CudaGemmRenderer
 from .posterior import DetectionPosteriorSamples, sample_detection_posterior
 from .roi_batches import build_roi_batch_provider
 from .runtime_config import build_localization_runtime_config
@@ -34,6 +35,7 @@ __all__ = [
     "MicrotubeTiffBatchProviderConfig",
     "MaterializedDatasetEvalConfig",
     "OnlineBatchProviderConfig",
+    "CudaGemmRenderer",
     "ProductionLocalizationModel",
     "ActiveSMLMGMMTargetAdapter",
     "ActiveSMLMGMMLoss",

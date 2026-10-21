@@ -63,6 +63,9 @@ OUTPUT_DIR="${OUTPUT_DIR:-$NEPTUNE_DIR/output/$RUN_NAME}"
 mkdir -p "$MPLCONFIGDIR"
 
 EXTRA_ARGS=()
+if [[ -n "${COEFF_MAP:-}" ]]; then
+  EXTRA_ARGS+=(--coeff-map "$COEFF_MAP")
+fi
 if [[ -n "${LOCPREC_XY_NM_MAX:-}" ]]; then
   EXTRA_ARGS+=(--locprec-xy-nm-max "$LOCPREC_XY_NM_MAX")
 fi
@@ -105,6 +108,7 @@ fi
   --roi-size "${ROI_SIZE:-96}" \
   --valid-roi-size "${VALID_ROI_SIZE:-80}" \
   --input-preprocess "${INPUT_PREPROCESS:-fd_deeploc_recenter}" \
+  --recenter-scope "${RECENTER_SCOPE:-tile}" \
   --filter-prob-min "${FILTER_PROB_MIN:-0.70}" \
   --filter-prob-sweep "${FILTER_PROB_SWEEP:-}" \
   --render-pixel-nm "${RENDER_PIXEL_NM:-20.0}" \
@@ -130,6 +134,7 @@ fi
   --rcc-max-shift-nm "${RCC_MAX_SHIFT_NM:-1000.0}" \
   --rcc-min-pair-correlation "${RCC_MIN_PAIR_CORRELATION:-0.02}" \
   --side "$SIDE" \
+  --domain-count "${DOMAIN_COUNT:-2}" \
   --left-crop-left "${LEFT_DOMAIN_CROP_LEFT:-0}" \
   --left-crop-top "${LEFT_DOMAIN_CROP_TOP:-0}" \
   --left-crop-width "${LEFT_DOMAIN_CROP_WIDTH:-600}" \

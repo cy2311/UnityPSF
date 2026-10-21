@@ -155,6 +155,79 @@ def test_degrid_h5_is_derived_and_preserves_non_xy_fields(tmp_path) -> None:
     assert summary.is_file()
 
 
+def test_periodic_degrid_uses_coordinate_phase_and_preserves_native_offsets(tmp_path) -> None:
+    source = tmp_path / "predictions_period2.h5"
+    output = tmp_path / "predictions_period2_degrid.h5"
+    summary = tmp_path / "period2_degrid_summary.json"
+    count = 4000
+    rng = np.random.default_rng(23)
+    cell_x = 2.0 * rng.integers(2, 40, count)
+    cell_y = 2.0 * rng.integers(2, 40, count)
+    biased_phase_x = 2.0 * (rng.beta(6.0, 2.0, count) - 0.5)
+    biased_phase_y = 2.0 * (rng.beta(5.0, 2.5, count) - 0.5)
+    x_px = cell_x + 1.0 + biased_phase_x
+    y_px = cell_y + 1.0 + biased_phase_y
+    rows = []
+    for index in range(count):
+        rows.append(
+            {
+                "frame": index // 10,
+                "x_px": x_px[index],
+                "y_px": y_px[index],
+                "x_offset_px": x_px[index] - np.floor(x_px[index]) - 0.5,
+                "y_offset_px": y_px[index] - np.floor(y_px[index]) - 0.5,
+                "x_sig_nm": 10.0 + index % 20,
+                "y_sig_nm": 11.0 + index % 20,
+                "z_nm": 0.0,
+                "prob": 0.9,
+            }
+        )
+    with H5PredictionWriter(
+        source,
+        fieldnames=list(rows[0]),
+        schema="infer_recon_predictions_h5_v0.2",
+    ) as writer:
+        writer.append_rows(rows)
+    source_y = y_px.astype(np.float32)
+    source_y_offset = (y_px - np.floor(y_px) - 0.5).astype(np.float32)
+
+    payload = degrid_predictions_h5(
+        predictions=source,
+        output=output,
+        summary_json=summary,
+        pixel_size_nm_x=100.0,
+        pixel_size_nm_y=100.0,
+        rescale_bins=4,
+        threshold=0.01,
+        min_bin_count=32,
+        histogram_png=None,
+        period_px_x=2.0,
+        period_px_y=2.0,
+        axes="x",
+    )
+
+    with h5py.File(output, "r") as handle:
+        output_x = np.asarray(handle["locs/x_px"][:], dtype=np.float64)
+        output_y = np.asarray(handle["locs/y_px"][:], dtype=np.float64)
+        np.testing.assert_allclose(
+            handle["locs/x_offset_px"][:],
+            output_x - np.floor(output_x) - 0.5,
+            rtol=0,
+            atol=1e-5,
+        )
+        np.testing.assert_array_equal(output_y, source_y)
+        np.testing.assert_array_equal(handle["locs/y_offset_px"][:], source_y_offset)
+        assert handle.attrs["degrid_contract"] == "lunar_periodic_rescale_offset_v1"
+        assert handle.attrs["degrid_axes"] == "x"
+        assert float(handle.attrs["degrid_period_px_x"]) == 2.0
+        assert float(handle.attrs["degrid_period_px_y"]) == 2.0
+
+    assert payload["period_px"] == {"x": 2.0, "y": 2.0}
+    assert payload["axes"] == ["x"]
+    assert payload["offset_uniformity_cv"]["x_after"] < payload["offset_uniformity_cv"]["x_before"] * 0.75
+    assert payload["offset_uniformity_cv"]["y_after"] == payload["offset_uniformity_cv"]["y_before"]
+
+
 def test_spatial_rescale_removes_local_grid_bias_hidden_by_global_cancellation() -> None:
     rng = np.random.default_rng(7)
     count = 40000
@@ -189,3 +262,4 @@ def test_spatial_rescale_removes_local_grid_bias_hidden_by_global_cancellation()
         after = abs(np.mean(np.exp(2j * np.pi * result.x_offset_px[mask])))
         assert before > 0.2
         assert after < 0.02
+

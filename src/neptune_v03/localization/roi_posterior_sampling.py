@@ -40,6 +40,13 @@ class ROIPosteriorSamplingConfig:
     seed: int = 0
     camera_backward: dict[str, float] | None = None
     over_cut_px: int = 0
+    dh_pair_shape_ncc_min: float | None = None
+    dh_pair_shape_rmse_max: float | None = None
+    dh_pair_probability_weight: float = 0.0
+    dh_pair_shape_ncc_weight: float = 0.0
+    dh_pair_shape_rmse_weight: float = 0.0
+    dh_pair_maximum_cost: float | None = None
+    dh_pair_fit_radius_px: int = 5
 
 
 @dataclass(frozen=True)
@@ -191,6 +198,7 @@ class CurrentROILibraryPosteriorSampler:
                                 posterior_group_id_base=int(posterior_group_id_base),
                                 config=self.config,
                                 generator=generator,
+                                dh_calibration=getattr(self.model, "dh_calibration", None),
                             )
                         posterior_group_id_base += len(batch_records)
                         with time_block("posterior_current_model_take_groups"):
@@ -529,7 +537,17 @@ def _posterior_samples_from_loc_output(
     posterior_group_id_base: int,
     config: ROIPosteriorSamplingConfig,
     generator: torch.Generator,
+    dh_calibration: Any | None = None,
 ) -> tuple[SampledEmitterSet, ...]:
+    if dh_calibration is not None:
+        return _dh_posterior_samples_from_loc_output(
+            loc_output,
+            records=records,
+            sample_index_base=sample_index_base,
+            posterior_group_id_base=posterior_group_id_base,
+            config=config,
+            dh_calibration=dh_calibration,
+        )
     prob, mu, sig, bg = _extract_posterior_fields(loc_output, background_scale=float(config.background_scale))
     bg_smoothed = None if bg is None else _smooth_background(bg, kernel_size=int(config.background_smoothing_kernel)).detach().cpu()
     prob_integrated = _spatial_integrated_probability(
@@ -661,6 +679,173 @@ def _posterior_samples_from_loc_output(
                     metrics=metrics,
                 )
             )
+    return tuple(samples)
+
+
+def _dh_posterior_samples_from_loc_output(
+    loc_output: torch.Tensor | LocalizationModelOutput,
+    *,
+    records: Sequence[ROIRecord],
+    sample_index_base: int,
+    posterior_group_id_base: int,
+    config: ROIPosteriorSamplingConfig,
+    dh_calibration: Any,
+) -> tuple[SampledEmitterSet, ...]:
+    if not isinstance(loc_output, torch.Tensor) or loc_output.ndim != 4 or int(loc_output.shape[1]) != 8:
+        raise ValueError("DH posterior sampling requires an 8-channel DH lobe tensor output")
+    import numpy as np
+    from double_helix.dh_postprocess import (
+        CalibrationCurves,
+        LobePeaks,
+        PairQualityConfig,
+        PairGeometryConfig,
+        enumerate_pair_candidates,
+        select_pair_candidates_quality,
+    )
+
+    out = loc_output.detach().cpu().to(dtype=torch.float32)
+    bg = _smooth_background(out[:, 7] * float(config.background_scale), kernel_size=int(config.background_smoothing_kernel))
+    calibration = CalibrationCurves(
+        z_nm=dh_calibration.z_nm.detach().cpu().numpy(),
+        angle_rad=dh_calibration.angle_rad.detach().cpu().numpy(),
+        distance_px=dh_calibration.separation_px.detach().cpu().numpy(),
+        abs_log_ratio=dh_calibration.abs_log_ratio.detach().cpu().numpy(),
+        midpoint_x_px=dh_calibration.midpoint_x_px.detach().cpu().numpy(),
+        midpoint_y_px=dh_calibration.midpoint_y_px.detach().cpu().numpy(),
+    )
+    max_lobes = 2 * int(config.max_emitters_per_roi) if config.max_emitters_per_roi else 64
+    max_emitters = int(config.max_emitters_per_roi) if config.max_emitters_per_roi else max(1, max_lobes // 2)
+    samples: list[SampledEmitterSet] = []
+    for batch_index, record in enumerate(records):
+        probability = out[batch_index, 0]
+        local_max = F.max_pool2d(probability[None, None], kernel_size=3, stride=1, padding=1)[0, 0]
+        keep = (probability >= local_max) & (probability > float(config.candidate_probability_threshold))
+        y_ix, x_ix = keep.nonzero(as_tuple=True)
+        if x_ix.numel() > max_lobes:
+            order = torch.argsort(probability[y_ix, x_ix], descending=True)[:max_lobes]
+            x_ix, y_ix = x_ix[order], y_ix[order]
+        lobe_peaks = LobePeaks(
+            x_px=(x_ix.to(torch.float32) + out[batch_index, 2, y_ix, x_ix]).numpy(),
+            y_px=(y_ix.to(torch.float32) + out[batch_index, 3, y_ix, x_ix]).numpy(),
+            intensity=(out[batch_index, 1, y_ix, x_ix] * float(config.photon_scale)).numpy(),
+            sigma_x_px=out[batch_index, 5, y_ix, x_ix].clamp_min(1e-3).numpy(),
+            sigma_y_px=out[batch_index, 6, y_ix, x_ix].clamp_min(1e-3).numpy(),
+            shape_residual=np.zeros(int(x_ix.numel()), dtype=np.float32),
+            detection_score=probability[y_ix, x_ix].numpy(),
+        )
+        candidates = enumerate_pair_candidates(
+            lobe_peaks,
+            geometry=PairGeometryConfig(),
+            calibration=calibration,
+        )
+        frame_raw = np.asarray(record.raw_frames_photon, dtype=np.float32)
+        pair_frame = frame_raw if frame_raw.ndim == 2 else frame_raw[int(frame_raw.shape[0]) // 2]
+        quality = select_pair_candidates_quality(
+            pair_frame,
+            lobe_peaks,
+            candidates,
+            config=PairQualityConfig(
+                shape_ncc_min=config.dh_pair_shape_ncc_min,
+                shape_rmse_max=config.dh_pair_shape_rmse_max,
+                probability_weight=float(config.dh_pair_probability_weight),
+                shape_ncc_weight=float(config.dh_pair_shape_ncc_weight),
+                shape_rmse_weight=float(config.dh_pair_shape_rmse_weight),
+                maximum_cost=config.dh_pair_maximum_cost,
+                fit_radius_px=int(config.dh_pair_fit_radius_px),
+            ),
+        )
+        pairs = quality.pairs
+        if pairs.x_px.size > max_emitters:
+            order = np.argsort(pairs.score)[:max_emitters]
+            pair_x = pairs.x_px[order]
+            pair_y = pairs.y_px[order]
+            pair_angle = pairs.angle_rad[order]
+            pair_photons = []
+            pair_probability = []
+            for pair_index in order.tolist():
+                first = int(pairs.first_lobe_index[pair_index])
+                second = int(pairs.second_lobe_index[pair_index])
+                pair_photons.append(float(lobe_peaks.intensity[first] + lobe_peaks.intensity[second]))
+                pair_probability.append(float(min(lobe_peaks.detection_score[first], lobe_peaks.detection_score[second])))
+            pair_photons = np.asarray(pair_photons, dtype=np.float32)
+            pair_probability = np.asarray(pair_probability, dtype=np.float32)
+        else:
+            pair_x, pair_y, pair_angle = pairs.x_px, pairs.y_px, pairs.angle_rad
+            pair_photons = np.asarray(
+                [
+                    float(lobe_peaks.intensity[int(first)] + lobe_peaks.intensity[int(second)])
+                    for first, second in zip(pairs.first_lobe_index, pairs.second_lobe_index, strict=True)
+                ],
+                dtype=np.float32,
+            )
+            pair_probability = np.asarray(
+                [
+                    float(min(lobe_peaks.detection_score[int(first)], lobe_peaks.detection_score[int(second)]))
+                    for first, second in zip(pairs.first_lobe_index, pairs.second_lobe_index, strict=True)
+                ],
+                dtype=np.float32,
+            )
+        if pair_x.size:
+            z_nm = np.asarray(calibration.estimate_z(pair_angle), dtype=np.float32)
+            corrected_x, corrected_y = calibration.correct_midpoints(pair_x, pair_y, z_nm)
+            xy = torch.as_tensor(np.column_stack((corrected_x, corrected_y)), dtype=torch.float32)
+            z = torch.as_tensor(z_nm, dtype=torch.float32)
+            photons = torch.as_tensor(pair_photons, dtype=torch.float32).clamp_min(float(config.min_photons))
+            probability_values = torch.as_tensor(pair_probability, dtype=torch.float32)
+            inner = _inner_xy_mask(xy, roi_size_px=int(config.roi_size_px), over_cut_px=int(config.over_cut_px))
+            xy, z, photons, probability_values = xy[inner], z[inner], photons[inner], probability_values[inner]
+        else:
+            xy = torch.empty((0, 2), dtype=torch.float32)
+            z = torch.empty((0,), dtype=torch.float32)
+            photons = torch.empty((0,), dtype=torch.float32)
+            probability_values = torch.empty((0,), dtype=torch.float32)
+        if config.z_range_nm is not None:
+            z = z.clamp(float(config.z_range_nm[0]), float(config.z_range_nm[1]))
+        frame_raw_tensor = torch.as_tensor(record.raw_frames_photon, dtype=torch.float32)
+        frame_count = 1 if frame_raw_tensor.ndim == 2 else int(frame_raw_tensor.shape[0])
+        frame_offset = int(frame_count // 2)
+        frame_index = int(record.frame_window[0]) + frame_offset
+        samples.append(
+            SampledEmitterSet(
+                roi_id=int(record.roi_id),
+                domain_name=str(record.domain_name),
+                sample_index=int(sample_index_base + len(samples)),
+                cell_xy_px=xy.clone(),
+                xy_px=xy,
+                z_nm=z,
+                photons=photons,
+                probability=probability_values,
+                emitter_count=int(xy.shape[0]),
+                frame_index=frame_index,
+                frame_offset=frame_offset,
+                background_smoothed=bg[batch_index],
+                log_q_h_given_x=None,
+                metrics={
+                    "roi_id": int(record.roi_id),
+                    "frame_index": int(frame_index),
+                    "frame_offset": int(frame_offset),
+                    "emitter_count": int(xy.shape[0]),
+                    "emitter_count_total": int(xy.shape[0]),
+                    "emitter_count_inner": int(xy.shape[0]),
+                    "emitter_count_after_boundary": int(xy.shape[0]),
+                    "boundary_emitter_dropped": 0,
+                    "target_cap_emitter_dropped": 0,
+                    "density_cap_emitter_dropped": 0,
+                    "max_emitters_per_roi": max_emitters,
+                    "over_cut_px": int(config.over_cut_px),
+                    "posterior_group_id": int(posterior_group_id_base + batch_index),
+                    "posterior_group_sample_index": 0,
+                    "posterior_sampling_source": "dh_lobe_pair_matching",
+                    "posterior_delta_source": "angle_separation_calibration",
+                    "dh_lobe_candidate_count": int(x_ix.numel()),
+                    "dh_pair_candidate_count": int(len(candidates)),
+                    "dh_pair_shape_gate_count": int(quality.shape_gate_count),
+                    "dh_pair_selected_count": int(quality.selected_count),
+                    "dh_pair_shape_ncc_min": config.dh_pair_shape_ncc_min,
+                    "dh_pair_shape_rmse_max": config.dh_pair_shape_rmse_max,
+                },
+            )
+        )
     return tuple(samples)
 
 

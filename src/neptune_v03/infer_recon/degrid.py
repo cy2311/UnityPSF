@@ -219,12 +219,22 @@ def degrid_predictions_h5(
     spatial_bins_y: int = 1,
     field_width_px: float | None = None,
     field_height_px: float | None = None,
+    period_px_x: float = 1.0,
+    period_px_y: float = 1.0,
+    axes: str = "xy",
 ) -> dict[str, object]:
     predictions = Path(predictions)
     output = Path(output)
     summary_json = Path(summary_json)
     if output.exists():
         raise FileExistsError(output)
+    if float(period_px_x) <= 0 or float(period_px_y) <= 0:
+        raise ValueError("degrid periods must be positive")
+    axes = str(axes).lower()
+    if axes not in {"x", "y", "xy"}:
+        raise ValueError("degrid axes must be 'x', 'y', or 'xy'")
+    degrid_x = "x" in axes
+    degrid_y = "y" in axes
     output.parent.mkdir(parents=True, exist_ok=True)
     summary_json.parent.mkdir(parents=True, exist_ok=True)
 
@@ -237,8 +247,21 @@ def degrid_predictions_h5(
             raise KeyError(f"predictions H5 is missing required degrid columns: {missing}")
         x_px = np.asarray(group["x_px"][:], dtype=np.float64)
         y_px = np.asarray(group["y_px"][:], dtype=np.float64)
-        x_offset_px = _read_or_derive_offset(group, "x_offset_px", x_px)
-        y_offset_px = _read_or_derive_offset(group, "y_offset_px", y_px)
+        periodic_enabled = not (
+            np.isclose(float(period_px_x), 1.0) and np.isclose(float(period_px_y), 1.0)
+        )
+        x_offset_px = _read_degrid_phase(
+            group,
+            "x_offset_px",
+            x_px,
+            period_px=float(period_px_x),
+        )
+        y_offset_px = _read_degrid_phase(
+            group,
+            "y_offset_px",
+            y_px,
+            period_px=float(period_px_y),
+        )
         x_sig_nm = _read_uncertainty_nm(group, axis="x", pixel_size_nm=float(pixel_size_nm_x))
         y_sig_nm = _read_uncertainty_nm(group, axis="y", pixel_size_nm=float(pixel_size_nm_y))
 
@@ -275,31 +298,54 @@ def degrid_predictions_h5(
                 threshold=float(threshold),
                 min_bin_count=int(min_bin_count),
             )
-        delta_x_px = result.x_offset_px - x_offset_px
-        delta_y_px = result.y_offset_px - y_offset_px
-        _replace(group, "x_px", x_px + delta_x_px)
-        _replace(group, "y_px", y_px + delta_y_px)
+        delta_x_px = (
+            (result.x_offset_px - x_offset_px) * float(period_px_x)
+            if degrid_x
+            else np.zeros_like(x_px)
+        )
+        delta_y_px = (
+            (result.y_offset_px - y_offset_px) * float(period_px_y)
+            if degrid_y
+            else np.zeros_like(y_px)
+        )
+        corrected_x_px = x_px + delta_x_px
+        corrected_y_px = y_px + delta_y_px
+        _replace(group, "x_px", corrected_x_px)
+        _replace(group, "y_px", corrected_y_px)
         _shift_if_present(group, "x_px_full", delta_x_px)
         _shift_if_present(group, "y_px_full", delta_y_px)
-        _replace_if_present(group, "x_nm", (x_px + delta_x_px) * float(pixel_size_nm_x))
-        _replace_if_present(group, "y_nm", (y_px + delta_y_px) * float(pixel_size_nm_y))
+        _replace_if_present(group, "x_nm", corrected_x_px * float(pixel_size_nm_x))
+        _replace_if_present(group, "y_nm", corrected_y_px * float(pixel_size_nm_y))
         _shift_if_present(group, "x_nm_full", delta_x_px * float(pixel_size_nm_x))
         _shift_if_present(group, "y_nm_full", delta_y_px * float(pixel_size_nm_y))
-        _replace_if_present(group, "x_offset_px", result.x_offset_px)
-        _replace_if_present(group, "y_offset_px", result.y_offset_px)
-        _replace_if_present(group, "x_offset_nm", result.x_offset_px * float(pixel_size_nm_x))
-        _replace_if_present(group, "y_offset_nm", result.y_offset_px * float(pixel_size_nm_y))
+        native_x_offset_px = corrected_x_px - np.floor(corrected_x_px) - 0.5
+        native_y_offset_px = corrected_y_px - np.floor(corrected_y_px) - 0.5
+        output_x_offset_px = native_x_offset_px if periodic_enabled else result.x_offset_px
+        output_y_offset_px = native_y_offset_px if periodic_enabled else result.y_offset_px
+        if degrid_x:
+            _replace_if_present(group, "x_offset_px", output_x_offset_px)
+            _replace_if_present(group, "x_offset_nm", output_x_offset_px * float(pixel_size_nm_x))
+        if degrid_y:
+            _replace_if_present(group, "y_offset_px", output_y_offset_px)
+            _replace_if_present(group, "y_offset_nm", output_y_offset_px * float(pixel_size_nm_y))
 
-        handle.attrs["derived_kind"] = "lunar_spatial_offset_degrid" if spatial_enabled else "lunar_offset_degrid"
+        handle.attrs["derived_kind"] = _degrid_derived_kind(
+            spatial_enabled=spatial_enabled,
+            periodic_enabled=periodic_enabled,
+        )
         handle.attrs["source_predictions"] = str(predictions)
-        handle.attrs["degrid_contract"] = (
-            "lunar_spatial_rescale_offset_v1" if spatial_enabled else "lunar_rescale_offset_v1"
+        handle.attrs["degrid_contract"] = _degrid_contract(
+            spatial_enabled=spatial_enabled,
+            periodic_enabled=periodic_enabled,
         )
         handle.attrs["degrid_rescale_bins"] = int(rescale_bins)
         handle.attrs["degrid_threshold"] = float(threshold)
         handle.attrs["degrid_min_bin_count"] = int(min_bin_count)
         handle.attrs["degrid_spatial_bins_x"] = int(spatial_bins_x)
         handle.attrs["degrid_spatial_bins_y"] = int(spatial_bins_y)
+        handle.attrs["degrid_period_px_x"] = float(period_px_x)
+        handle.attrs["degrid_period_px_y"] = float(period_px_y)
+        handle.attrs["degrid_axes"] = axes
         handle.attrs["count"] = int(x_px.size)
 
     shift_x_nm = delta_x_px * float(pixel_size_nm_x)
@@ -307,21 +353,28 @@ def degrid_predictions_h5(
     radial_shift_nm = np.hypot(shift_x_nm, shift_y_nm)
     histogram_edges = np.linspace(-0.5, 0.5, 101)
     x_hist_before = np.histogram(x_offset_px, bins=histogram_edges)[0]
-    x_hist_after = np.histogram(result.x_offset_px, bins=histogram_edges)[0]
+    x_phase_after = result.x_offset_px if degrid_x else x_offset_px
+    y_phase_after = result.y_offset_px if degrid_y else y_offset_px
+    x_hist_after = np.histogram(x_phase_after, bins=histogram_edges)[0]
     y_hist_before = np.histogram(y_offset_px, bins=histogram_edges)[0]
-    y_hist_after = np.histogram(result.y_offset_px, bins=histogram_edges)[0]
+    y_hist_after = np.histogram(y_phase_after, bins=histogram_edges)[0]
     payload = {
-        "contract": "lunar_spatial_rescale_offset_v1" if spatial_enabled else "lunar_rescale_offset_v1",
+        "contract": _degrid_contract(
+            spatial_enabled=spatial_enabled,
+            periodic_enabled=periodic_enabled,
+        ),
         "source_predictions": str(predictions),
         "output_predictions": str(output),
         "total_rows": int(x_px.size),
-        "changed_rows": int(np.count_nonzero(result.changed)),
+        "changed_rows": int(np.count_nonzero((np.abs(delta_x_px) > 1e-12) | (np.abs(delta_y_px) > 1e-12))),
         "processed_bins": int(result.processed_bins),
         "rescale_bins": int(rescale_bins),
         "threshold": float(threshold),
         "min_bin_count": int(min_bin_count),
         "spatial_bins_x": int(spatial_bins_x),
         "spatial_bins_y": int(spatial_bins_y),
+        "period_px": {"x": float(period_px_x), "y": float(period_px_y)},
+        "axes": [axis for axis in ("x", "y") if axis in axes],
         "pixel_size_nm_x": float(pixel_size_nm_x),
         "pixel_size_nm_y": float(pixel_size_nm_y),
         "shift_nm": _shift_summary(radial_shift_nm),
@@ -347,17 +400,42 @@ def degrid_predictions_h5(
         _write_histogram_png(
             histogram_png=Path(histogram_png),
             x_before=x_offset_px,
-            x_after=result.x_offset_px,
+            x_after=x_phase_after,
             y_before=y_offset_px,
-            y_after=result.y_offset_px,
+            y_after=y_phase_after,
+            periodic_enabled=periodic_enabled,
         )
     return payload
+
+
+def _read_degrid_phase(
+    group: h5py.Group,
+    key: str,
+    coordinates_px: np.ndarray,
+    *,
+    period_px: float,
+) -> np.ndarray:
+    if np.isclose(float(period_px), 1.0):
+        return _read_or_derive_offset(group, key, coordinates_px)
+    return np.mod(coordinates_px, float(period_px)) / float(period_px) - 0.5
 
 
 def _read_or_derive_offset(group: h5py.Group, key: str, coordinates_px: np.ndarray) -> np.ndarray:
     if key in group:
         return np.asarray(group[key][:], dtype=np.float64)
     return coordinates_px - np.floor(coordinates_px) - 0.5
+
+
+def _degrid_contract(*, spatial_enabled: bool, periodic_enabled: bool) -> str:
+    if periodic_enabled:
+        return "lunar_spatial_periodic_rescale_offset_v1" if spatial_enabled else "lunar_periodic_rescale_offset_v1"
+    return "lunar_spatial_rescale_offset_v1" if spatial_enabled else "lunar_rescale_offset_v1"
+
+
+def _degrid_derived_kind(*, spatial_enabled: bool, periodic_enabled: bool) -> str:
+    if periodic_enabled:
+        return "lunar_spatial_periodic_offset_degrid" if spatial_enabled else "lunar_periodic_offset_degrid"
+    return "lunar_spatial_offset_degrid" if spatial_enabled else "lunar_offset_degrid"
 
 
 def _read_uncertainty_nm(group: h5py.Group, *, axis: str, pixel_size_nm: float) -> np.ndarray:
@@ -410,6 +488,7 @@ def _write_histogram_png(
     x_after: np.ndarray,
     y_before: np.ndarray,
     y_after: np.ndarray,
+    periodic_enabled: bool = False,
 ) -> None:
     import matplotlib.pyplot as plt
 
@@ -425,7 +504,7 @@ def _write_histogram_png(
         axis.hist(values, bins=bins, color="#2f6f8f")
         axis.set_xlim(-0.5, 0.5)
         axis.set_title(title)
-        axis.set_xlabel("sub-pixel offset (px)")
+        axis.set_xlabel("normalized periodic phase" if periodic_enabled else "sub-pixel offset (px)")
         axis.set_ylabel("count")
     fig.savefig(histogram_png, dpi=180)
     plt.close(fig)
@@ -446,6 +525,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--spatial-bins-y", type=int, default=1)
     parser.add_argument("--field-width-px", type=float, default=None)
     parser.add_argument("--field-height-px", type=float, default=None)
+    parser.add_argument("--period-px-x", type=float, default=1.0)
+    parser.add_argument("--period-px-y", type=float, default=1.0)
+    parser.add_argument("--axes", choices=("x", "y", "xy"), default="xy")
     return parser.parse_args()
 
 
@@ -465,6 +547,9 @@ def main() -> int:
         spatial_bins_y=int(args.spatial_bins_y),
         field_width_px=args.field_width_px,
         field_height_px=args.field_height_px,
+        period_px_x=float(args.period_px_x),
+        period_px_y=float(args.period_px_y),
+        axes=str(args.axes),
     )
     print(json.dumps(payload, indent=2))
     return 0

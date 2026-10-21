@@ -1,0 +1,28 @@
+phase_retrieval:
+  input:
+    tiff_path: ${UNITYPSF_RAW_TIFF}
+train:
+  device: cuda:0
+  epochs: 300
+  online_generation:
+    simulation_backend: cuda_gemm
+    height: 64
+    width: 64
+    npupil: 64
+    vector_psf_size: 21
+    vector_batch_size: 4096
+    steps_per_epoch: 417
+    dual_domain_coeff_maps:
+      - name: left
+        coeff_maps_npz: ${UNITYPSF_LEFT_MAP}
+      - name: right
+        coeff_maps_npz: ${UNITYPSF_RIGHT_MAP}
+  eval:
+    enabled: true
+    source: online_generation
+    eval_interval_epochs: 5
+    batch_count: 4
+    batch_size: 4
+    seed: 100000
+metadata:
+  training_mode: unitypsf_cuda_gemm_direct_from_scratch

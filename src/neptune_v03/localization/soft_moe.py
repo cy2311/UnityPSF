@@ -98,6 +98,9 @@ class SoftMoEFiLMExperts(nn.Module):
         )
         image = image.to(device=parameter.device, dtype=parameter.dtype)
         condition = condition.to(device=parameter.device, dtype=parameter.dtype)
+        if self.domain_count == 1:
+            # With one domain, softmax([x]) == 1 exactly; skip gate and blend.
+            return self.experts[0]((image, condition))
         if int(self.current_epoch) < int(self.hard_route_until_epoch):
             domain_idx = domain_index_from_condition(
                 condition,

@@ -81,9 +81,10 @@ export PYTHONUNBUFFERED=1
   --display-imax-min "${DISPLAY_IMAX_MIN:--2.5228787452803374}" \
   --radius-mode fixed \
   --filtered-format h5 \
-  --keep-filtered-predictions \
   --z-min -600 \
   --z-max 600 \
   --suffix current_standard_prob070_degrid_rcc
+
+rm -f -- "$INFER_DIR/predictions_raw.h5" "$INFER_DIR/predictions_degrid.h5"
 
 printf 'current_standard_reprocess_complete\noutput_dir=%s\nside=%s\n' "$OUTPUT_DIR" "$SIDE"

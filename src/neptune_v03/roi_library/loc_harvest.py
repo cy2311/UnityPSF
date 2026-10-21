@@ -9,6 +9,10 @@ import torch
 import torch.nn.functional as F
 
 from neptune_v03.localization.conditioning import FullResZernikeConditioning
+from neptune_v03.localization.roi_posterior_sampling import (
+    ROIPosteriorSamplingConfig,
+    _dh_posterior_samples_from_loc_output,
+)
 
 from .raw_tiff_builder import InferredEmitter, ROIBankBuildConfig, ROIBankDomain, RawInferenceResult, build_roi_bank_from_inference
 from .types import ROIBank
@@ -33,6 +37,14 @@ class LocHarvestConfig:
     tile_size_px: int = 128
     overlap_px: int = 16
     max_emitters_per_window: int | None = None
+    dh_pair_shape_ncc_min: float | None = None
+    dh_pair_shape_rmse_max: float | None = None
+    dh_pair_probability_weight: float = 0.0
+    dh_pair_shape_ncc_weight: float = 0.0
+    dh_pair_shape_rmse_weight: float = 0.0
+    dh_pair_maximum_cost: float | None = None
+    dh_pair_fit_radius_px: int = 5
+    dh_pair_quality: Mapping[str, Any] | None = None
 
 
 def build_roi_bank_from_loc_harvest(
@@ -142,21 +154,45 @@ def loc_harvest_infer_fn(
                     )
                     model_input = (tile_image, condition.unsqueeze(0))
                 output = model(model_input).detach().to(dtype=torch.float32)
-                tile_emitters = extract_old_smlm_emitters_from_tile(
-                    output,
-                    tile=tile,
-                    candidate_threshold=float(config.candidate_probability_threshold),
-                    accept_threshold=float(config.probability_threshold),
-                    split_threshold=float(config.split_threshold),
-                    photon_scale=float(config.photon_scale),
-                    z_scale=float(config.z_scale),
-                    phot_min=float(config.phot_min),
-                    sigma_max_px=float(config.sigma_max_px),
-                    frame_index=center_frame,
-                    full_width=width,
-                    full_height=height,
-                    max_emitters=config.max_emitters_per_window,
-                )
+                if _is_dh_lobe_output(output, model=model):
+                    quality = dict(config.dh_pair_quality or {})
+                    quality.setdefault("shape_ncc_min", config.dh_pair_shape_ncc_min)
+                    quality.setdefault("shape_rmse_max", config.dh_pair_shape_rmse_max)
+                    quality.setdefault("probability_weight", config.dh_pair_probability_weight)
+                    quality.setdefault("shape_ncc_weight", config.dh_pair_shape_ncc_weight)
+                    quality.setdefault("shape_rmse_weight", config.dh_pair_shape_rmse_weight)
+                    quality.setdefault("maximum_cost", config.dh_pair_maximum_cost)
+                    quality.setdefault("fit_radius_px", config.dh_pair_fit_radius_px)
+                    tile_emitters = extract_dh_emitters_from_tile(
+                        output,
+                        raw_frame=np.asarray(tile_raw[int(raw.shape[0]) // 2].detach().cpu(), dtype=np.float32),
+                        tile=tile,
+                        candidate_threshold=float(config.candidate_probability_threshold),
+                        accept_threshold=float(config.probability_threshold),
+                        photon_scale=float(config.photon_scale),
+                        frame_window=frame_window,
+                        full_width=width,
+                        full_height=height,
+                        max_emitters=config.max_emitters_per_window,
+                        dh_calibration=_dh_calibration(model),
+                        pair_quality=quality,
+                    )
+                else:
+                    tile_emitters = extract_old_smlm_emitters_from_tile(
+                        output,
+                        tile=tile,
+                        candidate_threshold=float(config.candidate_probability_threshold),
+                        accept_threshold=float(config.probability_threshold),
+                        split_threshold=float(config.split_threshold),
+                        photon_scale=float(config.photon_scale),
+                        z_scale=float(config.z_scale),
+                        phot_min=float(config.phot_min),
+                        sigma_max_px=float(config.sigma_max_px),
+                        frame_index=center_frame,
+                        full_width=width,
+                        full_height=height,
+                        max_emitters=config.max_emitters_per_window,
+                    )
                 emitters.extend(tile_emitters)
                 bg = _background_from_output_or_raw(output, raw, tile=tile, bg_scale=float(config.bg_scale))
                 background_accum[tile["y0"] : tile["y1"], tile["x0"] : tile["x1"]] += bg
@@ -167,10 +203,134 @@ def loc_harvest_infer_fn(
         return RawInferenceResult(
             emitters=tuple(emitters),
             background_mu=background_accum / np.maximum(background_count, 1.0),
-            metadata={"domain": str(domain.name), "frame_window": frame_window, "source": "loc_harvest_raw_tiff"},
+            metadata={
+                "domain": str(domain.name),
+                "frame_window": frame_window,
+                "source": "loc_harvest_raw_tiff",
+                "decoder": "dh_lobe_pair_matching" if _is_dh_lobe_model(model) else "legacy_smlm_10ch",
+            },
         )
 
     return infer_fn
+
+
+def _is_dh_lobe_model(model: torch.nn.Module) -> bool:
+    module = model.module if hasattr(model, "module") and isinstance(model.module, torch.nn.Module) else model
+    return bool(getattr(module, "is_dh_lobe_model", False)) and getattr(module, "dh_calibration", None) is not None
+
+
+def _dh_calibration(model: torch.nn.Module) -> Any:
+    module = model.module if hasattr(model, "module") and isinstance(model.module, torch.nn.Module) else model
+    calibration = getattr(module, "dh_calibration", None)
+    if calibration is None:
+        raise ValueError("DH lobe harvest requires model.dh_calibration")
+    return calibration
+
+
+def _is_dh_lobe_output(output: torch.Tensor, *, model: torch.nn.Module) -> bool:
+    return _is_dh_lobe_model(model) and output.ndim == 4 and int(output.shape[1]) == 8
+
+
+def extract_dh_emitters_from_tile(
+    output: torch.Tensor,
+    *,
+    raw_frame: np.ndarray,
+    tile: Mapping[str, int],
+    candidate_threshold: float,
+    accept_threshold: float,
+    photon_scale: float,
+    frame_window: tuple[int, int],
+    full_width: int,
+    full_height: int,
+    max_emitters: int | None,
+    dh_calibration: Any,
+    pair_quality: Mapping[str, Any] | None = None,
+) -> list[InferredEmitter]:
+    if not (output.ndim == 4 and int(output.shape[1]) == 8):
+        return []
+    height = int(output.shape[-2])
+    width = int(output.shape[-1])
+    record = _dh_harvest_record(
+        raw_frames=np.asarray(raw_frame, dtype=np.float32)[None, ...],
+        frame_window=frame_window,
+        roi_size_px=max(height, width),
+    )
+    samples = _dh_posterior_samples_from_loc_output(
+        output,
+        records=(record,),
+        sample_index_base=0,
+        posterior_group_id_base=0,
+        config=ROIPosteriorSamplingConfig(
+            candidate_probability_threshold=float(candidate_threshold),
+            probability_threshold=float(accept_threshold),
+            max_emitters_per_roi=max_emitters,
+            roi_size_px=max(height, width),
+            photon_scale=float(photon_scale),
+            background_smoothing_kernel=1,
+            dh_pair_shape_ncc_min=None if pair_quality is None else pair_quality.get("shape_ncc_min"),
+            dh_pair_shape_rmse_max=None if pair_quality is None else pair_quality.get("shape_rmse_max"),
+            dh_pair_probability_weight=0.0 if pair_quality is None else float(pair_quality.get("probability_weight", 0.0)),
+            dh_pair_shape_ncc_weight=0.0 if pair_quality is None else float(pair_quality.get("shape_ncc_weight", 0.0)),
+            dh_pair_shape_rmse_weight=0.0 if pair_quality is None else float(pair_quality.get("shape_rmse_weight", 0.0)),
+            dh_pair_maximum_cost=None if pair_quality is None else pair_quality.get("maximum_cost"),
+            dh_pair_fit_radius_px=5 if pair_quality is None else int(pair_quality.get("fit_radius_px", 5)),
+        ),
+        dh_calibration=dh_calibration,
+    )
+    if not samples:
+        return []
+    sample = samples[0]
+    emitters: list[InferredEmitter] = []
+    frame_index = int(frame_window[0]) + int((frame_window[1] - frame_window[0]) // 2)
+    for index in range(int(sample.emitter_count)):
+        xy = sample.xy_px[index]
+        x = float(tile["x0"]) + float(xy[0])
+        y = float(tile["y0"]) + float(xy[1])
+        probability = float(sample.probability[index])
+        photons = float(sample.photons[index])
+        z_nm = float(sample.z_nm[index])
+        if not (
+            probability >= float(accept_threshold)
+            and float(tile["keep_x0"]) <= x < float(tile["keep_x1"])
+            and float(tile["keep_y0"]) <= y < float(tile["keep_y1"])
+            and 0.0 <= x < float(full_width)
+            and 0.0 <= y < float(full_height)
+            and np.isfinite(x)
+            and np.isfinite(y)
+            and np.isfinite(photons)
+            and np.isfinite(z_nm)
+        ):
+            continue
+        emitters.append(
+            InferredEmitter(
+                probability=probability,
+                mu_xy_px=(x, y),
+                sigma_xy_px=(1.0, 1.0),
+                mu_z_nm=z_nm,
+                sigma_z_nm=0.0,
+                mu_photons=max(photons, 1e-6),
+                sigma_photons=max(0.5 * photons, 1e-6),
+                cell_xy_px=(float(tile["x0"]) + float(sample.cell_xy_px[index, 0]), float(tile["y0"]) + float(sample.cell_xy_px[index, 1])),
+                frame_index=frame_index,
+            )
+        )
+    return emitters
+
+
+def _dh_harvest_record(*, raw_frames: np.ndarray, frame_window: tuple[int, int], roi_size_px: int):
+    from neptune_v03.roi_library import ROIRecord
+
+    background = np.zeros((roi_size_px, roi_size_px), dtype=np.float32)
+    return ROIRecord(
+        roi_id=0,
+        domain_name="double_helix",
+        frame_window=frame_window,
+        roi_origin_xy_px=(0.0, 0.0),
+        raw_frames_photon=raw_frames,
+        background_mu=background,
+        background_smoothed=background,
+        grid_cell_id=0,
+    )
 
 
 def extract_old_smlm_emitters_from_tile(
@@ -261,9 +421,17 @@ def _normalize_tile_input(
 class _FDDeeplocTileNormalizer:
     train_background_adu: float = 495.58422534346505
     background_percentile: float = 50.0
+    recenter_mode: str = "block"
 
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         arr = frames.detach().cpu().numpy()
+        if self.recenter_mode == "frame":
+            backgrounds = np.asarray(
+                [self.estimate_background_numpy(image[None, ...]) for image in arr], dtype=np.float32
+            )
+            return frames.to(dtype=torch.float32) - torch.as_tensor(
+                backgrounds, dtype=torch.float32, device=frames.device
+            )[:, None, None] + float(self.train_background_adu)
         bg = self.estimate_background_numpy(arr)
         return frames.to(dtype=torch.float32) - float(bg) + float(self.train_background_adu)
 
@@ -290,6 +458,7 @@ class _FDDeeplocTileNormalizer:
         return {
             "mode": "fd_deeploc_style",
             "model_input": "recentered_raw_adu",
+            "recenter_mode": self.recenter_mode,
             "train_background_adu": float(self.train_background_adu),
             "background_percentile": float(self.background_percentile),
             "legacy_input_offset": None,
@@ -305,9 +474,13 @@ def _build_inference_frame_proc(config: Mapping[str, Any] | None) -> _FDDeeplocT
     if mode not in {"fd_deeploc_style", "fd_deeploc_exact_recenter", "fd-style", "fd_style", "fd_deeploc"}:
         return None
     train_background_adu = norm_cfg.get("train_background_adu", norm_cfg.get("backg", 495.58422534346505))
+    recenter_mode = str(norm_cfg.get("recenter_mode", "block")).lower()
+    if recenter_mode not in {"frame", "block"}:
+        raise ValueError(f"Unsupported recenter_mode={recenter_mode!r}; expected 'frame' or 'block'.")
     return _FDDeeplocTileNormalizer(
         train_background_adu=float(train_background_adu),
         background_percentile=float(norm_cfg.get("background_percentile", 50.0)),
+        recenter_mode=recenter_mode,
     )
 
 
